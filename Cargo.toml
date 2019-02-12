@@ -1,0 +1,24 @@
+[package]
+name = "malk-2018"
+version = "0.1.0"
+authors = ["Andrew Cann <shum@canndrew.org>"]
+edition = "2018"
+
+[dependencies]
+futures = "*"
+tokio = "*"
+failure = "*"
+serde_json = "*"
+future-utils = "*"
+canndrews-misc-ext-traits = { path = "../canndrews-misc-ext-traits" }
+maplit = "*"
+log = "0.4"
+lazy_static = "*"
+unwrap = "*"
+unicode-width = "*"
+unicode-xid = "*"
+unicode-brackets = "*"
+libc = "*"
+mio = "*"
+clap = "*"
+
