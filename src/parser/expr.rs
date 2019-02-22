@@ -1,5 +1,5 @@
 use super::*;
-use crate::lsp::Position;
+use lsp_types::Position;
 
 pub enum Expr {
     Let {
@@ -214,6 +214,24 @@ impl Expr {
             },
         }
     }
+
+    pub fn respan_bracketed(self, outer_span: Span) -> Expr {
+        match self {
+            Expr::Parens(_, expr) => Expr::Parens(outer_span, expr),
+            Expr::UnitTerm(..) => Expr::UnitTerm(outer_span),
+            Expr::UnitType(..) => Expr::UnitType(outer_span),
+            Expr::NeverType(..) => Expr::NeverType(outer_span),
+            Expr::PairTerm { head, tail, .. } => Expr::PairTerm { head, tail, span: outer_span },
+            Expr::PairType { head, tail, .. } => Expr::PairType { head, tail, span: outer_span },
+            Expr::EnumType { head, tail, .. } => Expr::EnumType { head, tail, span: outer_span },
+            Expr::EnumLeft { elem, .. } => Expr::EnumLeft { elem, span: outer_span },
+            Expr::EnumRight { expr, .. } => Expr::EnumRight { expr, span: outer_span },
+            Expr::EnumFuncTerm { pat, body, tail, .. } => Expr::EnumFuncTerm { pat, body, tail, span: outer_span },
+            Expr::EnumFuncType { pat, body, tail, .. } => Expr::EnumFuncType { pat, body, tail, span: outer_span },
+            Expr::NeverFunc(..) => Expr::NeverFunc(outer_span),
+            _ => self,
+        }
+    }
 }
 
 pub fn parse_expr<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Expr, ParseError> {
@@ -265,13 +283,21 @@ pub fn parse_let_expr<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<(Pat, Expr), 
             (Some(..), None, None) => return Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: ts.span().into(),
-                    msg: format!("expected '=' after let"),
+                    message: format!("expected '=' after let"),
+                    code: None,
+                    source: None,
+                    severity: None,
+                    related_information: None,
                 },
             ])),
             (Some(..), Some(tokens1), Some(..)) => return Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: tokens1.end.into(),
-                    msg: format!("unexpected '='"),
+                    message: format!("unexpected '='"),
+                    code: None,
+                    source: None,
+                    severity: None,
+                    related_information: None,
                 },
             ])),
             (Some(pat_tokens), Some(expr_tokens), None) => {
@@ -330,7 +356,11 @@ pub fn parse_under_func<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Expr, Parse
         None => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: ts.span().into(),
-                msg: format!("expected expression"),
+                message: format!("expected expression"),
+                code: None,
+                source: None,
+                severity: None,
+                related_information: None,
             },
         ])),
     };
@@ -384,7 +414,11 @@ pub fn parse_single_token<'t, 's: 't>(ts: TokensRef<'t, 's>)
                             _ => return Err(ParseError::Parse(vec![
                                 Diagnostic {
                                     range: ts.span_of(1).into(),
-                                    msg: format!("unexpected token following '#'"),
+                                    message: format!("unexpected token following '#'"),
+                                    code: None,
+                                    source: None,
+                                    severity: None,
+                                    related_information: None,
                                 },
                             ])),
                         },
@@ -392,7 +426,11 @@ pub fn parse_single_token<'t, 's: 't>(ts: TokensRef<'t, 's>)
                             return Err(ParseError::Parse(vec![
                                 Diagnostic {
                                     range: span.into(),
-                                    msg: format!("expected something following '#'"),
+                                    message: format!("expected something following '#'"),
+                                    code: None,
+                                    source: None,
+                                    severity: None,
+                                    related_information: None,
                                 },
                             ]));
                         },
@@ -402,7 +440,11 @@ pub fn parse_single_token<'t, 's: 't>(ts: TokensRef<'t, 's>)
                     return Err(ParseError::Parse(vec![
                         Diagnostic {
                             range: span.into(),
-                            msg: format!("unexpected symbol at start of expression '{}'", s),
+                            message: format!("unexpected symbol at start of expression '{}'", s),
+                            code: None,
+                            source: None,
+                            severity: None,
+                            related_information: None,
                         },
                     ]))
                 },
@@ -420,7 +462,11 @@ pub fn parse_single_token<'t, 's: 't>(ts: TokensRef<'t, 's>)
         TokenKind::Bracket(bracket_char, _) => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: Range::from(token.start),
-                msg: format!("unexpected bracket kind for expression '{}'", bracket_char),
+                message: format!("unexpected bracket kind for expression '{}'", bracket_char),
+                code: None,
+                source: None,
+                severity: None,
+                related_information: None,
             },
         ])),
         TokenKind::String(s) => Expr::String(Ident::new(&s, span)),

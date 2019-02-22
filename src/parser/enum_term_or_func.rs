@@ -57,7 +57,7 @@ pub fn parse_enum_func<'t, 's: 't>(
         tail = parse_enum_func_head(section, Box::new(tail))?;
     }
 
-    Ok(tail)
+    Ok(tail.respan_bracketed(outer_span))
 }
 
 pub fn parse_enum_func_tail<'t, 's: 't>(ts: TokensRef<'t, 's>)
@@ -86,7 +86,11 @@ pub fn parse_enum_func_head<'t, 's: 't>(ts: TokensRef<'t, 's>, tail: Box<Expr>)
         None => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: ts.span().into(),
-                msg: format!("expected '=>' or '->'"),
+                message: format!("expected '=>' or '->'"),
+                code: None,
+                source: None,
+                severity: None,
+                related_information: None,
             },
         ])),
         Some((pat_tokens, arrow, body_tokens)) => {

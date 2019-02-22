@@ -1,5 +1,5 @@
 use super::*;
-use crate::lsp::Position;
+use lsp_types::Position;
 
 pub enum Pat {
     Parens(Span, Box<Pat>),
@@ -43,6 +43,15 @@ impl Pat {
             },
         }
     }
+
+    pub fn respan_bracketed(self, outer_span: Span) -> Pat {
+        match self {
+            Pat::Parens(_, pat) => Pat::Parens(outer_span, pat),
+            Pat::Unit(..) => Pat::Unit(outer_span),
+            Pat::Pair { head, tail, .. } => Pat::Pair { head, tail, span: outer_span },
+            _ => self,
+        }
+    }
 }
 
 pub fn parse_pat<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Pat, ParseError> {
@@ -54,7 +63,11 @@ pub fn parse_pat<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Pat, ParseError> {
         None => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: ts.span().into(),
-                msg: String::from("expected pattern"),
+                message: String::from("expected pattern"),
+                code: None,
+                severity: None,
+                source: None,
+                related_information: None,
             },
         ])),
     };
@@ -66,7 +79,11 @@ pub fn parse_pat<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Pat, ParseError> {
         TokenKind::Symbol(s) => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: span.into(),
-                msg: format!("unexpected symbol at start of pattern '{}'", s),
+                message: format!("unexpected symbol at start of pattern '{}'", s),
+                code: None,
+                severity: None,
+                source: None,
+                related_information: None,
             },
         ])),
         TokenKind::Bracket('(', sub_tokens) => {
@@ -78,19 +95,31 @@ pub fn parse_pat<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Pat, ParseError> {
         TokenKind::Bracket(bracket_char, _) => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: Range::from(token.start),
-                msg: format!("unexpected bracket kind for pattern '{}'", bracket_char),
+                message: format!("unexpected bracket kind for pattern '{}'", bracket_char),
+                code: None,
+                severity: None,
+                source: None,
+                related_information: None,
             },
         ])),
         TokenKind::String(..) => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: span.into(),
-                msg: format!("strings in patterns not implemented"),
+                message: format!("strings in patterns not implemented"),
+                code: None,
+                severity: None,
+                source: None,
+                related_information: None,
             },
         ])),
         TokenKind::Numeric(..) => return Err(ParseError::Parse(vec![
             Diagnostic {
                 range: span.into(),
-                msg: format!("numbers in patterns not implemented"),
+                message: format!("numbers in patterns not implemented"),
+                code: None,
+                severity: None,
+                source: None,
+                related_information: None,
             },
         ])),
     };

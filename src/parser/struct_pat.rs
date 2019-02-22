@@ -21,7 +21,8 @@ pub fn parse_struct_pat<'t, 's: 't>(
             span,
         };
     }
-    Ok(tail)
+    let ret = tail.respan_bracketed(outer_span);
+    Ok(ret)
 }
 
 fn parse_struct_pat_tail<'t, 's: 't>(ts: TokensRef<'t, 's>)

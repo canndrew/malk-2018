@@ -1,9 +1,9 @@
 use super::*;
-use lsp::Position;
+use lsp_types::Position;
 
 pub struct CompositeTypeElem {
-    name: Option<Ident>,
-    expr: Box<Expr>,
+    pub name: Option<Ident>,
+    pub expr: Box<Expr>,
 }
 
 impl CompositeTypeElem {
@@ -59,7 +59,11 @@ pub fn parse_composite_type_elem<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(ts.end),
-                    msg: String::from("expected composite type element"),
+                    message: String::from("expected composite type element"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },
@@ -67,11 +71,19 @@ pub fn parse_composite_type_elem<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(tokens1.end),
-                    msg: String::from("unexpected second colon symbol in composite type element"),
+                    message: String::from("unexpected second colon symbol in composite type element"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
                 Diagnostic {
                     range: Range::from(tokens0.end),
-                    msg: String::from("position of first colon"),
+                    message: String::from("position of first colon"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },

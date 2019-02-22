@@ -18,7 +18,8 @@ pub fn parse_struct_type<'t, 's: 't>(ts: TokensRef<'t, 's>, outer_span: Span) ->
             span,
         };
     }
-    Ok(tail)
+    let ret = tail.respan_bracketed(outer_span);
+    Ok(ret)
 }
 
 fn parse_struct_type_tail<'t, 's: 't>(ts: TokensRef<'t, 's>) -> Result<Expr, ParseError> {

@@ -1,5 +1,137 @@
+use super::*;
 use crate::parser::*;
 
+impl fmt::Display for Expr {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Expr::Let { pat, expr, body, .. } => {
+                write!(fmt, "let ({}) = ({}); {}", pat, expr, body)
+            },
+            Expr::Parens(_, expr) => {
+                write!(fmt, "({})", expr)
+            },
+            Expr::Var(ident) => {
+                write!(fmt, "{}", ident.name())
+            },
+            Expr::UnitTerm(..) => {
+                write!(fmt, "{{}}")
+            },
+            Expr::UnitType(..) => {
+                write!(fmt, "#{{}}")
+            },
+            Expr::PairTerm { head, tail, .. } => {
+                match &head.name {
+                    Some(name) => {
+                        write!(fmt, "{{{} = ({}), .. ({})}}", name.name(), head.expr, tail)
+                    },
+                    None => {
+                        write!(fmt, "{{({}), .. ({})}}", head.expr, tail)
+                    },
+                }
+            },
+            Expr::PairType { head, tail, .. } => {
+                match &head.name {
+                    Some(name) => {
+                        write!(fmt, "#{{{}: ({}), .. ({})}}", name.name(), head.expr, tail)
+                    },
+                    None => {
+                        write!(fmt, "#{{({}), .. ({})}}", head.expr, tail)
+                    },
+                }
+            },
+            Expr::NeverType(..) => {
+                write!(fmt, "#[]")
+            },
+            Expr::EnumType { head, tail, .. } => {
+                match &head.name {
+                    Some(name) => {
+                        write!(fmt, "#[{}: ({}), .. ({})]", name.name(), head.expr, tail)
+                    },
+                    None => {
+                        write!(fmt, "#[({}), .. ({})]", head.expr, tail)
+                    },
+                }
+            },
+            Expr::NegFuncTerm { pat, body, .. } => {
+                write!(fmt, "({}) => ({})", pat, body)
+            },
+            Expr::NegFuncType { pat, body, .. } => {
+                write!(fmt, "({}) -> ({})", pat, body)
+            },
+            Expr::Number(ident) => {
+                write!(fmt, "{}", ident.name())
+            },
+            Expr::String(ident) => {
+                write!(fmt, "\"{}\"", ident.name())
+            },
+            Expr::EnumLeft { elem, .. } => {
+                match &elem.name {
+                    Some(name) => {
+                        write!(fmt, "[{} = ({})]", name.name(), elem.expr)
+                    },
+                    None => {
+                        write!(fmt, "[{}]", elem.expr)
+                    },
+                }
+            },
+            Expr::EnumRight { expr, .. } => {
+                write!(fmt, "[.. {}]", expr)
+            },
+            Expr::EnumFuncTerm { pat, body, tail, .. } => {
+                match &pat.name {
+                    Some(name) => {
+                        write!(fmt, "[{} = ({}) => ({}), .. {}]", name.name(), pat.pat, body, tail)
+                    },
+                    None => {
+                        write!(fmt, "[({}) => ({}), .. {}]", pat.pat, body, tail)
+                    },
+                }
+            },
+            Expr::EnumFuncType { pat, body, tail, .. } => {
+                match &pat.name {
+                    Some(name) => {
+                        write!(fmt, "[{} = ({}) -> ({}), .. {}]", name.name(), pat.pat, body, tail)
+                    },
+                    None => {
+                        write!(fmt, "[({}) -> ({}), .. {}]", pat.pat, body, tail)
+                    },
+                }
+            },
+            Expr::NeverFunc(..) => {
+                write!(fmt, "[]")
+            },
+            Expr::App { func, arg, .. } => {
+                write!(fmt, "({})({})", func, arg)
+            },
+        }
+    }
+}
+
+impl fmt::Display for Pat {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Pat::Parens(_, pat) => {
+                write!(fmt, "({})", pat)
+            },
+            Pat::Var(ident) => {
+                write!(fmt, "{}", ident.name())
+            },
+            Pat::Unit(..) => {
+                write!(fmt, "{{}}")
+            },
+            Pat::Pair { head, tail, .. } => {
+                match &head.name {
+                    Some(name) => {
+                        write!(fmt, "{{{} = ({}), .. ({})}}", name.name(), head.pat, tail)
+                    },
+                    None => {
+                        write!(fmt, "{{({}), .. ({})}}", head.pat, tail)
+                    },
+                }
+            },
+        }
+    }
+}
 /*
 struct Renderer {
     s: String,

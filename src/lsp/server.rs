@@ -1,14 +1,17 @@
 use super::*;
 
+use serde_json::json;
+
 pub trait LspServer {
     fn initialize(&mut self, initialize_params: InitializeParams)
-        -> BoxSendFuture<InitializeResponse, ErrorResponse<InitializeError>>;
+        -> BoxSendFuture<InitializeResult, ResponseError>;
     fn initialized(&mut self);
-    fn execute_command(&mut self) -> BoxSendFuture<(), ErrorResponse<()>>;
-    fn text_document_did_open(&mut self, params: DidOpenTextDocumentParams);
-    fn text_document_did_change(&mut self, params: DidChangeTextDocumentParams);
+    fn did_open_text_document(&mut self, params: DidOpenTextDocumentParams);
+    fn did_change_text_document(&mut self, params: DidChangeTextDocumentParams);
     fn document_highlight(&mut self, params: TextDocumentPositionParams)
-        -> BoxSendFuture<Option<Vec<DocumentHighlight>>, ErrorResponse<()>>;
+        -> BoxSendFuture<Option<Vec<DocumentHighlight>>, ResponseError>;
+    fn execute_command(&mut self, params: ExecuteCommandParams)
+        -> BoxSendFuture<Option<Value>, ResponseError>;
 }
 
 pub fn run<F, S>(f: F) -> Result<(), Error>
@@ -36,22 +39,13 @@ where
     let (client_notifications_tx, client_notifications_rx) = mpsc::unbounded();
     
     let client = LspClient {
+        next_request_id: AtomicU64::new(0),
         client_requests_tx,
         client_notifications_tx,
     };
     let mut server = f(client);
 
-    let client_notifications = {
-        client_notifications_rx
-        .map(Msg::Notification)
-    };
-
-    let client_requests = {
-        client_requests_rx
-        .map(Either::B)
-    };
-
-    let mut result_senders: HashMap<u64, ResultSender> = HashMap::new();
+    let mut result_senders: HashMap<u64, oneshot::Sender<Result<Value, ResponseError>>> = HashMap::new();
     //let stdin = BufReader::new(tokio::io::stdin());
     //let stdout = tokio::io::stdout();
 
@@ -102,7 +96,7 @@ where
         }))
     });
 
-    let msgs_to_client = {
+    let msgs_from_client = {
         unparsed_msgs_from_client
         .and_then(|msg: String| {
             let json: Value = {
@@ -110,121 +104,76 @@ where
                 .compat_context("invalid json received on stdin")?
             };
 
-            Ok(Either::A(Msg::from_json(json)?))
+            Message::from_json(json)
         })
-        .select(client_requests.infallible())
-        .and_then(move |either| {
-            trace!("got either or");
-            match either {
-                Either::A(msg) => match msg {
-                    Msg::Request(id, request_msg) => {
-                        Ok(Some(match request_msg {
-                            RequestMsg::Initialize(params) => {
-                                server
-                                .initialize(params)
-                                .map(|wow| {
-                                    trace!("initialize returned");
-                                    wow
-                                })
-                                .then(move |result| future::ok(match result {
-                                    Ok(response) => 
-                                        Msg::Response(id, ResponseMsg::Initialize(response)),
-                                    Err(error) => 
-                                        Msg::Error(id, error.to_error_msg()),
-                                }))
-                                .into_send_boxed()
-                            },
-                            RequestMsg::ExecuteCommand(params) => {
-                                server
-                                .execute_command()
-                                .then(move |result| future::ok(match result {
-                                    Ok(()) => 
-                                        Msg::Response(id, ResponseMsg::ExecuteCommand),
-                                    Err(error) =>
-                                        Msg::Error(id, error.to_error_msg())
-                                }))
-                                .into_send_boxed()
-                            },
-                            RequestMsg::DocumentHighlight(params) => {
-                                server
-                                .document_highlight(params)
-                                .then(move |result| future::ok(match result {
-                                    Ok(response) => 
-                                        Msg::Response(id, ResponseMsg::DocumentHighlight(response)),
-                                    Err(error) =>
-                                        Msg::Error(id, error.to_error_msg())
-                                }))
-                                .into_send_boxed()
-                            },
-                        }))
-                    },
-                    Msg::Response(id, response_msg) => {
-                        let result_sender = match result_senders.remove(&id) {
-                            Some(result_sender) => result_sender,
-                            None => bail!("invalid response id"),
-                        };
-                        result_sender.send(Ok(response_msg));
+    };
 
-                        Ok(None)
-                    },
-                    Msg::Error(id, error_msg) => {
-                        let result_sender = match result_senders.remove(&id) {
-                            Some(result_sender) => result_sender,
-                            None => bail!("invalid response id"),
-                        };
-                        result_sender.send(Err(error_msg));
-
-                        Ok(None)
-                    },
-                    Msg::Notification(notification_msg) => {
-                        trace!("got notification");
-                        match notification_msg {
-                            NotificationMsg::Initialized => {
-                                server.initialized();
-                            },
-                            NotificationMsg::TextDocumentDidOpen(params) => {
-                                trace!("got text document did open");
-                                server.text_document_did_open(params);
-                            },
-                            NotificationMsg::TextDocumentDidChange(params) => {
-                                trace!("got text document did change");
-                                server.text_document_did_change(params);
-                            },
-                            _ => {
-                                warn!(
-                                    "unrecognised notification from client: {}",
-                                    notification_msg.method(),
-                                );
-                            },
+    let msgs_to_client = {
+        msgs_from_client
+        .map(Either::A)
+        .select(client_requests_rx.map(Either::B).infallible())
+        //.and_then(|either| match either {
+        .and_then(move |either| -> BoxSendFuture<Option<Message>, Error> {match either {
+            Either::A(message_from_client) => match message_from_client {
+                Message::Notification(notification) => {
+                    let params = notification.params;
+                    match &notification.method[..] {
+                        Initialized::METHOD => {
+                            do_notification::<Initialized, _, _>(|server, _| server.initialized(), &mut server, params)
+                        },
+                        DidOpenTextDocument::METHOD => {
+                            do_notification::<DidOpenTextDocument, _, _>(S::did_open_text_document, &mut server, params)
+                        },
+                        DidChangeTextDocument::METHOD => {
+                            do_notification::<DidChangeTextDocument, _, _>(S::did_change_text_document, &mut server, params)
+                        },
+                        _ => {
+                            future_bail!("unrecognised notification method '{}'", notification.method);
+                            //future::ok(None).into_send_boxed()
+                        },
+                    }
+                },
+                Message::Request(request) => {
+                    let id = request.id;
+                    let params = request.params;
+                    match &request.method[..] {
+                        Initialize::METHOD => {
+                            do_request::<Initialize, _, _>(S::initialize, &mut server, id, params)
+                        },
+                        DocumentHighlightRequest::METHOD => {
+                            do_request::<DocumentHighlightRequest, _, _>(S::document_highlight, &mut server, id, params)
+                        },
+                        ExecuteCommand::METHOD => {
+                            do_request::<ExecuteCommand, _, _>(S::execute_command, &mut server, id, params)
+                        },
+                        _ => {
+                            future_bail!("unrecognised request method '{}'", request.method)
                         }
-                        Ok(None)
-                    },
+                    }
                 },
-                Either::B((id, request, result_sender)) => {
-                    result_senders.insert(id, result_sender);
-
-                    Ok(Some(future::ok(Msg::Request(id, request)).into_send_boxed()))
+                Message::Response(response) => {
+                    let id = response.id;
+                    let result_sender = match result_senders.remove(&id) {
+                        Some(result_sender) => result_sender,
+                        None => future_bail!("invalid response id"),
+                    };
+                    result_sender.send(response.response);
+                    future::ok(None).into_send_boxed()
                 },
-            }
-        })
+            },
+            Either::B((request_to_client, result_sender)) => {
+                result_senders.insert(request_to_client.id, result_sender);
+                future::ok(Some(Message::Request(request_to_client))).into_send_boxed()
+            },
+        }})
         .filter_map(|opt| opt)
-        .map(|wow| {
-            trace!("got a future to wait on");
-            wow
-        })
-        //.and_then(|f| f)
-        .buffer_unordered(1024)
-        .map(|wow| {
-            trace!("got a message to print");
-            wow
-        })
-        .select(client_notifications.infallible())
+        .select(client_notifications_rx.map(Message::Notification).infallible())
     };
 
     let fut = {
         msgs_to_client
-        .fold(stdout, |stdout, msg| {
-            let json = msg.to_json();
+        .fold(stdout, |stdout, message| {
+            let json = Message::to_json(message);
             let s = json.to_string();
             trace!("dispatching message to client: {}", s);
 
@@ -252,5 +201,46 @@ where
     };
 
     runtime.block_on(fut)
+}
+
+fn do_request<R, F, S>(f: F, server: &mut S, id: u64, params: Value) -> BoxSendFuture<Option<Message>, Error>
+where
+    R: Request,
+    R::Params: DeserializeOwned,
+    R::Result: Serialize + 'static,
+    F: FnOnce(&mut S, R::Params) -> BoxSendFuture<R::Result, ResponseError>,
+    S: LspServer + Send + 'static,
+{
+    let params = match serde_json::from_value(params) {
+        Ok(params) => params,
+        Err(e) => future_bail!("error parsing params: {}", e), 
+    };
+    f(server, params)
+    .then(move |res| {
+        let response = match res {
+            Ok(result) => Ok(unwrap!(serde_json::to_value(result))),
+            Err(err) => Err(err),
+        };
+        Ok(Some(Message::Response(ResponseMessage {
+            id: id,
+            response: response,
+        })))
+    })
+    .into_send_boxed()
+}
+
+fn do_notification<N, F, S>(f: F, server: &mut S, params: Value) -> BoxSendFuture<Option<Message>, Error>
+where
+    N: Notification,
+    N::Params: DeserializeOwned,
+    F: FnOnce(&mut S, N::Params),
+    S: LspServer + Send + 'static,
+{
+    let params = match serde_json::from_value(params) {
+        Ok(params) => params,
+        Err(e) => future_bail!("error parsing params: {}", e), 
+    };
+    f(server, params);
+    future::ok(None).into_send_boxed()
 }
 

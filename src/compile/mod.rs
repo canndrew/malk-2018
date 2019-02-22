@@ -1,7 +1,7 @@
 use super::*;
 use crate::parser::Expr;
 
-use crate::lsp::Diagnostic;
+use lsp_types::Diagnostic;
 
 static SYMBOL_TABLE: &[&str] = &[];
 

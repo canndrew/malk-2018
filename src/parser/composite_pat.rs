@@ -1,9 +1,9 @@
 use super::*;
-use crate::lsp::Position;
+use lsp_types::Position;
 
 pub struct CompositePatElem {
-    name: Option<Ident>,
-    pat: Box<Pat>,
+    pub name: Option<Ident>,
+    pub pat: Box<Pat>,
 }
 
 impl CompositePatElem {
@@ -59,7 +59,11 @@ pub fn parse_composite_pat_elem<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(ts.end),
-                    msg: String::from("expected composite pattern element"),
+                    message: String::from("expected composite pattern element"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },
@@ -67,11 +71,19 @@ pub fn parse_composite_pat_elem<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(tokens1.end),
-                    msg: String::from("unexpected second equals symbol in composite pattern element"),
+                    message: String::from("unexpected second equals symbol in composite pattern element"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
                 Diagnostic {
                     range: Range::from(tokens0.end),
-                    msg: String::from("position of first equals"),
+                    message: String::from("position of first equals"),
+                    code: None,
+                    severity: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },

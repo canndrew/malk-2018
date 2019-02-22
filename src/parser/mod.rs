@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::lexer::{Span, Token, TokenKind, TokensRef, LexError, TextPos};
-use crate::lsp::{Range, Diagnostic};
+use lsp_types::{Range, Diagnostic};
 
 pub use self::expr::*;
 pub use self::pat::*;

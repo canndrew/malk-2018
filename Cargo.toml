@@ -21,4 +21,6 @@ unicode-brackets = "*"
 libc = "*"
 mio = "*"
 clap = "*"
+lsp-types = "*"
+serde = { version = "*", features = ["derive"] }
 

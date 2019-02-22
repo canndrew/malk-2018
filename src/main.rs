@@ -5,13 +5,14 @@
 #![feature(try_from)]
 #![feature(nll)]
 #![feature(label_break_value)]
+#![feature(integer_atomics)]
 
 #![allow(unused_imports)] // workaround spurious warnings
 
 use futures::{future, stream, Future, Stream, Sink, Async};
 use futures::future::{Loop, Either};
 use futures::sync::oneshot;
-use failure::{Context, Error, Fail, bail};
+use failure::{Context, Error, Fail, bail, format_err};
 use future_utils::{FutureExt as _, StreamExt as _, BoxSendFuture, mpsc};
 use future_utils::mpsc::{UnboundedSender, UnboundedReceiver};
 use canndrews_misc_ext_traits::VecBytesExt;
@@ -21,7 +22,10 @@ use unwrap::unwrap;
 use log::{debug, trace, warn, error};
 use tokio::io::{AsyncRead, AsyncWrite};
 use clap::{Arg, App, AppSettings, SubCommand};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
+use std::sync::atomic;
+use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
 use std::borrow::Cow;
 use std::{fmt, io, slice, fs};
@@ -35,6 +39,12 @@ use std::path::Path;
 
 use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
+
+macro_rules! future_bail {
+    ($($t:expr),*) => ({
+        return futures::future::err(failure::format_err!($($t),*)).into_send_boxed();
+    })
+}
 
 mod lsp;
 mod result_ext;

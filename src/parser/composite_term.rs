@@ -1,9 +1,9 @@
 use super::*;
-use lsp::Position;
+use lsp_types::Position;
 
 pub struct CompositeTermElem {
-    name: Option<Ident>,
-    expr: Box<Expr>,
+    pub name: Option<Ident>,
+    pub expr: Box<Expr>,
 }
 
 impl CompositeTermElem {
@@ -62,11 +62,19 @@ pub fn parse_composite_term_elem<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(tokens1.end),
-                    msg: String::from("unexpected second equals symbol in composite term element"),
+                    message: String::from("unexpected second equals symbol in composite term element"),
+                    code: None,
+                    source: None,
+                    severity: None,
+                    related_information: None,
                 },
                 Diagnostic {
                     range: Range::from(tokens0.end),
-                    msg: String::from("position of first equals"),
+                    message: String::from("position of first equals"),
+                    code: None,
+                    source: None,
+                    severity: None,
+                    related_information: None,
                 },
             ]))
         },

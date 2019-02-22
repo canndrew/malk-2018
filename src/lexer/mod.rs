@@ -17,6 +17,10 @@ use unicode_brackets::UnicodeBrackets;
 use unicode_width::UnicodeWidthChar;
 use unicode_xid::UnicodeXID;
 
+use lsp_types::{
+    Diagnostic,
+};
+
 #[cfg(test)]
 mod test {
     use token::{Token, TokenKind};

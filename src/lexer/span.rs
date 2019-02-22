@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::lsp::{Range, Position};
+use lsp_types::{Range, Position};
 
 /// A position in a text document.
 #[derive(Hash, Debug, Clone, Copy, PartialEq)]
@@ -67,11 +67,11 @@ impl TextPos {
 
 impl Span {
     pub fn contains_pos(&self, pos: Position) -> bool {
-        if self.start.line > pos.line { return false };
-        if self.end.line < pos.line { return false };
+        if self.start.line as u64 > pos.line { return false };
+        if (self.end.line as u64) < pos.line { return false };
 
-        if self.start.line == pos.line && self.start.col > pos.character { return false };
-        if self.end.line == pos.line && self.end.col < pos.character { return false };
+        if self.start.line as u64 == pos.line && self.start.col as u64 > pos.character { return false };
+        if self.end.line as u64 == pos.line && (self.end.col as u64) < pos.character { return false };
 
         true
     }
@@ -89,8 +89,8 @@ impl From<TextPos> for Span {
 impl From<TextPos> for Position {
     fn from(text_pos: TextPos) -> Position {
         Position {
-            line: text_pos.line,
-            character: text_pos.col,
+            line: text_pos.line as u64,
+            character: text_pos.col as u64,
         }
     }
 }

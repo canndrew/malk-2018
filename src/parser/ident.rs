@@ -39,7 +39,11 @@ pub fn parse_ident<'t, 's: 't>(ts: TokensRef<'t, 's>)
                     Err(ParseError::Parse(vec![
                         Diagnostic {
                             range: span.into(),
-                            msg: String::from("expected ident, got something else"),
+                            message: String::from("expected ident, got something else"),
+                            severity: None,
+                            code: None,
+                            source: None,
+                            related_information: None,
                         },
                     ]))
                 }
@@ -49,7 +53,11 @@ pub fn parse_ident<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: Range::from(ts.end),
-                    msg: String::from("missing ident"),
+                    message: String::from("missing ident"),
+                    severity: None,
+                    code: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },
@@ -59,11 +67,19 @@ pub fn parse_ident<'t, 's: 't>(ts: TokensRef<'t, 's>)
             Err(ParseError::Parse(vec![
                 Diagnostic {
                     range: span0.into(),
-                    msg: format!("expected single ident"),
+                    message: format!("expected single ident"),
+                    severity: None,
+                    code: None,
+                    source: None,
+                    related_information: None,
                 },
                 Diagnostic {
                     range: span1.into(),
-                    msg: format!("unexpected second token"),
+                    message: format!("unexpected second token"),
+                    severity: None,
+                    code: None,
+                    source: None,
+                    related_information: None,
                 },
             ]))
         },

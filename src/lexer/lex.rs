@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::lsp::{Range, Diagnostic};
+use lsp_types::{Range, Position};
 
 #[derive(Debug, Clone, PartialEq, Fail)]
 pub enum LexError {
@@ -62,11 +62,19 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(close_pos),
-                        msg: String::from("invalid closing bracket"),
+                        message: String::from("invalid closing bracket"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     },
                     Diagnostic {
                         range: Range::from(open_pos),
-                        msg: String::from("unmatched opening bracket"),
+                        message: String::from("unmatched opening bracket"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     },
                 ])
             },
@@ -74,7 +82,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(open_pos),
-                        msg: String::from("unclosed bracket"),
+                        message: String::from("unclosed bracket"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     },
                 ])
             },
@@ -82,7 +94,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: format!("unexpected char {:?}", c),
+                        message: format!("unexpected char {:?}", c),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     },
                 ])
             },
@@ -90,7 +106,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: format!("unexpected closing bracket {:?}", c),
+                        message: format!("unexpected closing bracket {:?}", c),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     },
                 ])
             },
@@ -98,7 +118,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(start_pos),
-                        msg: String::from("unclosed string"),
+                        message: String::from("unclosed string"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
@@ -106,7 +130,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: format!("invalid escape digit {:?}", c),
+                        message: format!("invalid escape digit {:?}", c),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
@@ -114,7 +142,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: String::from("invalid unicode escape code"),
+                        message: String::from("invalid unicode escape code"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
@@ -122,7 +154,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: format!("invalid escape character {:?}", c),
+                        message: format!("invalid escape character {:?}", c),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
@@ -130,7 +166,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: String::from("invalid unicode escape"),
+                        message: String::from("invalid unicode escape"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
@@ -138,7 +178,11 @@ impl From<LexError> for Result<Vec<Diagnostic>, Error> {
                 Ok(vec![
                     Diagnostic {
                         range: Range::from(pos),
-                        msg: String::from("invalid unicode escape syntax"),
+                        message: String::from("invalid unicode escape syntax"),
+                        severity: None,
+                        code: None,
+                        source: None,
+                        related_information: None,
                     }
                 ])
             },
