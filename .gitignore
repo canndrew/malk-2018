@@ -1,2 +1,5 @@
 /target
+/grammar-macro/target
 **/*.rs.bk
+/Cargo.lock
+/grammar-macro/Cargo.lock

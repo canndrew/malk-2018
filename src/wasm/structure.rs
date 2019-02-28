@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub struct Module {
     pub types: Vec<FuncType>,
     pub funcs: Vec<Func>,
@@ -11,46 +12,55 @@ pub struct Module {
     pub exports: Vec<Export>,
 }
 
+#[derive(Debug)]
 pub struct TableType {
     pub limits: Limits,
 }
 
+#[derive(Debug)]
 pub struct Limits {
     pub min: u32,
     pub max: Option<u32>,
 }
 
+#[derive(Debug)]
 pub struct MemType {
     pub limits: Limits,
 }
 
+#[derive(Debug)]
 pub struct Global {
     pub type_: GlobalType,
     pub init: Expr,
 }
 
+#[derive(Debug)]
 pub struct GlobalType {
     pub val_type: ValType,
     pub mutable: bool,
 }
 
+#[derive(Debug)]
 pub struct Elem {
     pub table: TableIdx,
     pub offset: Expr,
     pub init: Vec<FuncIdx>,
 }
 
+#[derive(Debug)]
 pub struct Data {
     pub data: MemIdx,
     pub offset: Expr,
     pub init: Vec<u8>,
 }
 
+#[derive(Debug)]
 pub struct Export {
     pub name: String,
     pub desc: ExportDesc,
 }
 
+#[derive(Debug)]
 pub enum ExportDesc {
     Func(FuncIdx),
     Table(TableIdx),
@@ -58,12 +68,14 @@ pub enum ExportDesc {
     Global(GlobalIdx),
 }
 
+#[derive(Debug)]
 pub struct Import {
     pub module: String,
     pub name: String,
     pub desc: ImportDesc,
 }
 
+#[derive(Debug)]
 pub enum ImportDesc {
     Func(TypeIdx),
     Table(TableType),
@@ -71,12 +83,13 @@ pub enum ImportDesc {
     Global(GlobalType),
 }
 
+#[derive(Debug)]
 pub struct FuncType {
     pub params: Vec<ValType>,
     pub result: Vec<ValType>,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum ValType {
     I32,
     I64,
@@ -84,16 +97,19 @@ pub enum ValType {
     F64,
 }
 
+#[derive(Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<ValType>,
     pub body: Expr,
 }
 
+#[derive(Debug)]
 pub struct Expr {
     pub instructions: Vec<Instruction>,
 }
 
+#[derive(Debug)]
 pub enum Instruction {
     I32Const(i32),
     I64Const(i64),
@@ -267,23 +283,24 @@ pub enum Instruction {
     CallIndirect(TypeIdx),
 }
 
+#[derive(Debug)]
 pub struct MemArg {
     pub offset: u32,
     pub align: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TypeIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct FuncIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TableIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MemIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GlobalIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LocalIdx(pub u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LabelIdx(pub u32);
 

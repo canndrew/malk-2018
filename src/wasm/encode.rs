@@ -476,7 +476,9 @@ impl Encode for Instruction {
 
 impl Encode for Expr {
     fn encode(&self, w: &mut Vec<u8>) {
-        self.instructions.encode(w);
+        for instruction in &self.instructions {
+            instruction.encode(w);
+        }
         w.push(0x0b);
     }
 }
@@ -586,7 +588,7 @@ impl Encode for Module {
         }
 
         if let Some(ref start) = self.start {
-            encode_section(9, start, w, &mut scratch);
+            encode_section(8, start, w, &mut scratch);
         }
 
         if !self.funcs.is_empty() {
@@ -638,7 +640,9 @@ impl<'a> Encode for CodeEntry<'a> {
             count.encode(&mut function_code);
             local_type.encode(&mut function_code);
         }
+        debug!("before encoding the body: {:?}", &function_code[..]);
         self.body.encode(&mut function_code);
+        debug!("after encoding the body: {:?}", &function_code[..]);
 
         (function_code.len() as u32).encode(w);
         w.extend(&function_code[..]);

@@ -1,0 +1,15 @@
+[package]
+name = "grammar-macro"
+version = "0.1.0"
+authors = ["Andrew Cann <shum@canndrew.org>"]
+edition = "2018"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "*"
+syn = { version = "*", features = ["full"] }
+proc-macro2 = "*"
+unicode-segmentation = "*"
+

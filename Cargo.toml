@@ -23,4 +23,9 @@ mio = "*"
 clap = "*"
 lsp-types = "*"
 serde = { version = "*", features = ["derive"] }
+wasmer-runtime = { path = "../wasmer/lib/runtime" }
+
+grammar-macro = { path = "grammar-macro" }
+regex = "*"
+unicode-segmentation = "*"
 

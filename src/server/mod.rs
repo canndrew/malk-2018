@@ -139,7 +139,44 @@ impl LspServer for Server {
         if params.command == "normalise" {
             for (uri, expr_opt) in &self.open_uris {
                 if let Some(expr) = expr_opt {
-                    let text = format!("{}", expr);
+                    use wasmer_runtime::{imports, instantiate};
+                    use crate::wasm::Encode;
+
+                    let module = crate::wasm::build_expr(expr);
+                    debug!("module == {:#?}", module);
+                    let mut bytes = Vec::new();
+                    module.encode(&mut bytes);
+
+                    let imports = imports! {};
+                    debug!("about to instantiate");
+                    let instance = match instantiate(&bytes, &imports) {
+                        Ok(instance) => instance,
+                        Err(e) => {
+                            debug!("instantiation failed: {}", e);
+                            continue
+                        },
+                    };
+                    debug!("instantiated");
+
+                    let wow = &instance.context().memory(0).view::<u8>()[..];
+                    let bang = unsafe { std::slice::from_raw_parts(wow.as_ptr() as *const u8, wow.len()) };
+
+                    let new_expr = compile::interpret_value(
+                        bang,
+                        &crate::parser::Expr::Var(crate::parser::Ident::new("String", crate::lexer::Span {
+                            start: crate::lexer::TextPos {
+                                line: 0,
+                                col: 0,
+                                byte: 0,
+                            },
+                            end: crate::lexer::TextPos {
+                                line: 0,
+                                col: 0,
+                                byte: 0,
+                            },
+                        },
+                    )));
+                    let text = format!("{}", new_expr);
                     let edit = WorkspaceEdit {
                         changes: None,
                         document_changes: Some(DocumentChanges::Edits(vec![

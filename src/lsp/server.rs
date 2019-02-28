@@ -134,6 +134,7 @@ where
                     }
                 },
                 Message::Request(request) => {
+                    debug!("Got a request yo!: {}", request.method);
                     let id = request.id;
                     let params = request.params;
                     match &request.method[..] {

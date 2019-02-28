@@ -1,11 +1,11 @@
 #![feature(pattern)]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
-#![feature(underscore_imports)]
 #![feature(try_from)]
 #![feature(nll)]
 #![feature(label_break_value)]
 #![feature(integer_atomics)]
+#![feature(proc_macro_hygiene)]
 
 #![allow(unused_imports)] // workaround spurious warnings
 
@@ -28,7 +28,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
 use std::borrow::Cow;
-use std::{fmt, io, slice, fs};
+use std::{fmt, io, slice, fs, str};
 use std::fmt::Display;
 use std::io::{Read, Write, BufReader};
 use std::str::FromStr;

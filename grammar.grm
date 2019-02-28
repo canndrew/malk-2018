@@ -1,0 +1,18 @@
+use super::Ast;
+
+$whitespace: () = [
+    /\s/,
+    comment,
+];
+
+comment: () = [
+    "//" /.*$/ => (),
+    "/*" rest_of_multiline_comment => (),
+];
+
+rest_of_multiline_comment: () = [
+    "/*" rest_of_multiline_comment rest_of_multiline_comment => (),
+    "*/" => (),
+    /./ rest_of_multiline_comment => (),
+];
+
