@@ -1,18 +1,259 @@
-use super::Ast;
+use crate::core::{Term, Ident, Pat};
+use std::convert::TryFrom;
 
 $whitespace: () = [
-    /\s/,
-    comment,
+    /\s+/ => (),
+    comment "" => (),
 ];
 
 comment: () = [
-    "//" /.*$/ => (),
-    "/*" rest_of_multiline_comment => (),
+    /\/\//" /.*$/ => (),
+    /\/\*/" rest_of_multiline_comment => (),
 ];
 
 rest_of_multiline_comment: () = [
     "/*" rest_of_multiline_comment rest_of_multiline_comment => (),
     "*/" => (),
     /./ rest_of_multiline_comment => (),
+];
+
+
+any_term: Term = [
+    let_statement,
+    non_statement_term,
+];
+
+non_statement_term: Term = [
+    func_term,
+    func_type,
+    typed_term,
+    app,
+    in,
+    enclosed_term,
+];
+
+enclosed_term: Term = [
+    bracketed_term,
+    variable,
+    string,
+];
+
+bracketed_term: Term = [
+    parens_term,
+    pair_term,
+    unit_term,
+    enum_left,
+    enum_right,
+    case_term,
+    nothing_term,
+    pair_type,
+    unit_type,
+    enum_type,
+    never_type,
+    case_type,
+    nothing_type,
+];
+
+
+
+
+parens_term: Term = "(" (enclosed: any_term) ")" => enclosed;
+typed_term: Term = (term: enclosed_term) ":" (ty: enclosed_term) => Term::Typed { term, ty };
+
+unit_term: Term = "{" "}" => Term::Unit;
+unit_type: Term = "#{" "}" => Term::UnitType;
+
+pair_term: Term = [
+    "{" (name: binding) "=" (head: non_statement_term) (tail: pair_term_tail) "}"
+        => Term::Pair { name: Some(name), head, tail },
+    "{" (head: non_statement_term) (tail: pair_term_tail) "}"
+        => Term::Pair { name: None, head, tail },
+];
+
+pair_term_tail: Term = [
+    "," ".." (tail: non_statement_term) => tail,
+    "," (name: binding) "=" (head: non_statement_term) (tail: pair_term_tail)
+        => Term::Pair { name: Some(name), head, tail },
+    "," (head: non_statement_term) (tail: pair_term_tail)
+        => Term::Pair { name: None, head, tail },
+    "," => Term::Unit,
+    "" => Term::Unit,
+];
+
+pair_type: Term = [
+    "#{" (name: binding) ":" (head: non_statement_term) (tail: pair_type_tail) "}"
+        => Term::PairType { name: Some(name), head, tail },
+    "#{" (head: non_statement_term) (tail: pair_type_tail) "}"
+        => Term::PairType { name: None, head, tail },
+];
+
+pair_type_tail: Term = [
+    "," ".." (tail: non_statement_term) => tail,
+    "," (name: binding) ":" (head: non_statement_term) (tail: pair_type_tail)
+        => Term::PairType { name: Some(name), head, tail },
+    "," (head: non_statement_term) (tail: pair_type_tail)
+        => Term::PairType { name: None, head, tail },
+    "," => Term::UnitType,
+    "" => Term::UnitType,
+];
+
+enum_left: Term = [
+    "@" (ident: ident) "=" (left: non_statement_term)
+        => Term::InjLeft { ident: Some(ident), left },
+    "@" (left: non_statement_term)
+        => Term::InjLeft { ident: None, left },
+];
+
+enum_right: Term = "@" ".." (right: non_statement_term) => Term::InjRight { right };
+
+enum_type: Term = [
+    "@{" (name: binding) ":" (head: non_statement_term) (tail: enum_type_tail) "}"
+        => Term::EnumType { name: Some(name), head, tail },
+    "@{" (head: non_statement_term) (tail: enum_type_tail) "}"
+        => Term::EnumType { name: None, head, tail },
+];
+
+enum_type_tail: Term = [
+    "," ".." (tail: non_statement_term) => tail,
+    "," (name: binding) ":" (head: non_statement_term) (tail: enum_type_tail)
+        => Term::EnumType { name: Some(name), head, tail },
+    "," (head: non_statement_term) (tail: enum_type_tail)
+        => Term::EnumType { name: None, head, tail },
+    "," => Term::NeverType,
+    "" => Term::NeverType,
+];
+
+never_type: Term = "@{" "}" => Term::NeverType;
+
+var_name: String = /[a-zA-Z][a-zA-Z0-9]*\b/;
+
+ident: Ident = "" (i: ident_inner) => i;
+ident_inner: Ident = [
+    /\^/ (i: ident_inner) => {
+        let i = i.into_inner();
+        Ident { name: i.name, bumps: i.bumps + 1 }
+    },
+    (name: var_name) => Ident { name: name.into_inner(), bumps: 0 },
+];
+
+variable: Term = (i: ident) => Term::Var(i.into_inner());
+binding: String = "" (s: var_name) => s;
+
+unit_pat: Pat = "{" "}" => Pat::Unit;
+pair_pat: Pat = [
+    "{" (name: binding) "=" (head: operator_pat) (tail: pair_pat_tail) "}"
+        => Pat::Pair { name: Some(name), head, tail },
+    "{" (head: operator_pat) (tail: pair_pat_tail) "}"
+        => Pat::Pair { name: None, head, tail },
+];
+
+pair_pat_tail: Pat = [
+    "," ".." (tail: operator_pat) => tail,
+    "," (name: binding) "=" (head: operator_pat) (tail: pair_pat_tail)
+        => Pat::Pair { name: Some(name), head, tail },
+    "," (head: operator_pat) (tail: pair_pat_tail)
+        => Pat::Pair { name: None, head, tail },
+    "," => Pat::Unit,
+    "" => Pat::Unit,
+];
+
+bind_pat: Pat = (name: binding) => Pat::Bind(name);
+
+any_pat: Pat = [
+    case_left,
+    case_right,
+    typed_pat,
+];
+
+operator_pat: Pat = [
+    typed_pat,
+    enclosed_pat,
+];
+
+enclosed_pat: Pat = [
+    parens_pat,
+    unit_pat,
+    pair_pat,
+    bind_pat,
+];
+
+app: Term = (func: enclosed_term) (arg: bracketed_term) => Term::App { func, arg };
+in: Term = (arg: enclosed_term) "in" (func: enclosed_term) => Term::App { func, arg };
+
+func_term: Term = (pat: enclosed_pat) "=>" (body: non_statement_term) => Term::Func { pat, body };
+func_type: Term = (pat: enclosed_pat) "->" (body: non_statement_term) => Term::FuncType { pat, body };
+
+nothing_term: Term = "[" "]" => Term::Nothing;
+nothing_type: Term = "@[" "]" => Term::NothingType;
+
+case_term: Term = [
+    "[" (name: binding) "=" (head: non_statement_term) (tail: case_term_tail) "]"
+        => Term::Case { name: Some(name), head, tail },
+    "[" (head: non_statement_term) (tail: case_term_tail) "}"
+        => Term::Case { name: None, head, tail },
+];
+
+case_term_tail: Term = [
+    "," ".." (tail: non_statement_term) => tail,
+    "," (name: binding) "=" (head: non_statement_term) (tail: case_term_tail)
+        => Term::Case { name: Some(name), head, tail },
+    "," (head: non_statement_term) (tail: case_term_tail)
+        => Term::Case { name: None, head, tail },
+    "," => Term::Nothing,
+    "" => Term::Nothing,
+];
+
+case_type: Term = [
+    "#[" (name: binding) ":" (head: non_statement_term) (tail: case_type_tail) "]"
+        => Term::EnumType { name: Some(name), head, tail },
+    "#[" (head: non_statement_term) (tail: case_type_tail) "]"
+        => Term::EnumType { name: None, head, tail },
+];
+
+case_type_tail: Term = [
+    "," ".." (tail: non_statement_term) => tail,
+    "," (name: binding) ":" (head: non_statement_term) (tail: case_type_tail)
+        => Term::EnumType { name: Some(name), head, tail },
+    "," (head: non_statement_term) (tail: case_type_tail)
+        => Term::EnumType { name: None, head, tail },
+    "," => Term::NeverType,
+    "" => Term::NeverType,
+];
+
+case_left: Pat = [
+    "@" (ident: ident) "=" (left: operator_pat)
+        => Pat::ProjLeft { ident: Some(ident), left },
+    "@" (left: operator_pat)
+        => Pat::ProjLeft { ident: None, left },
+];
+
+case_right: Pat = "@" ".." (right: operator_pat) => Pat::ProjRight { right };
+
+let_statement: Term
+    = "let" (pat: operator_pat) "=" (expr: non_statement_term) ";" (body: any_term)
+    => Term::Let { pat, expr, body };
+
+string: Term = "\"" (s: string_inner) "\"" => Term::String(s.into_inner());
+string_inner: String = [
+    /"/ => String::new(),
+    /\\/ (e: escape_code) (s: string_inner) => format!("{}{}", e.into_inner(), s.into_inner()),
+    (s: /[^\\"]+/) => s,
+];
+
+parens_pat: Pat = "(" (enclosed: any_pat) ")" => enclosed;
+typed_pat: Pat = (pat: enclosed_pat) ":" (ty: enclosed_term) => Pat::Typed { pat, ty };
+
+escape_code: char = [
+    /n/ => '\n',
+    /r/ => '\r',
+    /\\/ => '\\',
+    /t/ => '\t',
+    /0/ => '\0',
+    /x/ (ds: /[0-9a-fA-F]{2}/) => {
+        char::try_from(ds.into_inner().chars().fold(0, |i, c| (i << 4) | c.to_digit(16).unwrap())).unwrap()
+    },
+    /u\{/ (ds: /[0-9a-fA-F]{,6}/) /\}/ => {
+        char::try_from(ds.into_inner().chars().fold(0, |i, c| (i << 4) | c.to_digit(16).unwrap())).unwrap()
+    },
 ];
 

@@ -1,4 +1,4 @@
-#![recursion_limit = "128"]
+#![recursion_limit = "256"]
 
 extern crate proc_macro;
 use proc_macro::TokenStream;
@@ -22,9 +22,9 @@ enum Expr<'s> {
     Enum(Vec<Expr<'s>>),
     Map(Box<Expr<'s>>, syn::Expr),
     Seq(Vec<Expr<'s>>),
-    Lit(&'s str),
-    Bind(&'s str, Box<Expr<'s>>),
-    Regex(&'s str),
+    Lit(String),
+    Bind(syn::Pat, Box<Expr<'s>>),
+    Regex(String),
 }
 
 #[derive(Debug)]
@@ -177,10 +177,11 @@ fn split_first(s: &str) -> Option<(char, &str)> {
 }
 
 fn parse_rule(mut s: &str) -> (&str, Rule<'_>) {
+    //println!("parsing rule from {:?}", s);
     let (new_s, name) = parse_ident(s);
     s = match split_first(new_s.trim()) {
         Some((':', new_s)) => new_s,
-        _ => panic!("expected a colon"),
+        _ => panic!("expected a colon after rule name '{}'", name),
     };
 
     /*
@@ -202,39 +203,31 @@ fn parse_rule(mut s: &str) -> (&str, Rule<'_>) {
     (new_s, rule)
 }
 
-fn parse_rust_expr(s: &str, stop: char) -> (&str, syn::Expr) {
-    let mut matches = s.match_indices(stop);
-    loop {
-        let (eq_pos, _) = matches.next().expect(&format!("expected a {:?}", stop));
-        let t = &s[..eq_pos];
-        match syn::parse_str::<syn::Expr>(t) {
-            Err(..) => continue,
-            Ok(expr) => {
-                break (&s[(eq_pos + 1)..], expr);
-            }
-        }
-    }
-}
-
-fn parse_stringish(s: &str, stop: char) -> (&str, &str) {
+fn parse_stringish(s: &str, stop: char) -> (&str, String) {
+    let mut ret = String::new();
     let mut char_indices = s.char_indices();
     let end = loop {
         let (i, c) = char_indices.next().expect("unexpected end of string or regex");
         if c == '\\' {
-            let _ = char_indices.next().expect("missing escape code");
+            let (_, c) = char_indices.next().expect("missing escape code");
+            if c == stop {
+                ret.push(c);
+                continue;
+            }
+            ret.push('\\');
+            ret.push(c);
             continue;
         }
         if c == stop {
             break i;
         }
+        ret.push(c);
     };
-    let ret = &s[..end];
     let s = &s[(end + 1)..];
     (s, ret)
 }
 
 fn parse_expr(mut s: &str, stop: char) -> (&str, Expr<'_>) {
-    println!("parsing until {:?}: {:?}", stop, s);
     let mut all_exprs: Vec<Expr<'_>> = Vec::new();
     loop {
         s = s.trim();
@@ -273,13 +266,9 @@ fn parse_expr(mut s: &str, stop: char) -> (&str, Expr<'_>) {
                 }
             },
             '(' => {
-                let (new_s, ident) = parse_ident(new_s);
-                let new_s = match split_first(new_s.trim()) {
-                    Some((':', new_s)) => new_s,
-                    _ => panic!("expected colon"),
-                };
+                let (new_s, pat) = parse_rust_syntax(new_s, ':');
                 let (new_s, expr) = parse_expr(new_s, ')');
-                let expr = Expr::Bind(ident, Box::new(expr));
+                let expr = Expr::Bind(pat, Box::new(expr));
                 (new_s, expr)
             },
             '=' => {
@@ -287,7 +276,7 @@ fn parse_expr(mut s: &str, stop: char) -> (&str, Expr<'_>) {
                     Some(('>', new_s)) => new_s,
                     _ => panic!("unexpected equals sign"),
                 };
-                let (new_s, rust_expr) = parse_rust_expr(new_s, stop);
+                let (new_s, rust_expr) = parse_rust_syntax(new_s, stop);
                 let mut arg_exprs = mem::replace(&mut all_exprs, Vec::new());
                 let expr = if arg_exprs.len() <= 1 {
                     arg_exprs.remove(0)
@@ -335,7 +324,8 @@ pub fn grammar(code: TokenStream) -> TokenStream {
     if item_mod.content.is_some() {
         panic!("wrong wrong wrong");
     }
-    let mut name = item_mod.ident.to_string();
+    let mod_name = item_mod.ident;
+    let mut name = mod_name.to_string();
     name.push_str(".grm");
 
     let mut file = File::open(&name).unwrap_or_else(|e| panic!("error opening file {:?}: {}", name, e));
@@ -349,111 +339,170 @@ pub fn grammar(code: TokenStream) -> TokenStream {
     for rule in ruleset.other_rules {
         let name = syn::Ident::new(&format!("parse_{}", rule.name), Span::call_site());
         let ty = rule.ty;
-        let (expr, _pat) = quote_expr(rule.expr);
+        let (expr, _pat, _ty) = quote_expr(rule.expr);
         let quoted_rule = quote! {
-            fn #name(s: &str) -> Option<(Ast<#ty>, &str)> {
+            pub fn #name<'u, 'p>(uri: &'u Arc<Url>, p: Parser<'p>) -> Result<(Ast<#ty>, Parser<'p>), Diagnostic> {
+                log::trace!("parse_{}({:#?})", stringify!(#name), p.rest());
                 #expr
             }
         };
         quoted_rules.push(quoted_rule);
     }
-    let (whitespace_expr, _pat) = quote_expr(ruleset.whitespace.expr);
+    let (whitespace_expr, _pat, _ty) = quote_expr(ruleset.whitespace.expr);
     let whitespace_rule = quote! {
-        fn skip_whitespace(s: &str) -> Option<&str> {
-            let (_, s) = #whitespace_expr?;
-            Some(s)
+        pub fn skip_whitespace<'u, 'p>(uri: &'u Arc<Url>, p: Parser<'p>) -> Parser<'p> {
+            let res: Result<(Ast<()>, Parser<'p>), Diagnostic> = #whitespace_expr;
+            match res {
+                Ok((_, p)) => p,
+                _ => p,
+            }
         }
     };
     quoted_rules.push(whitespace_rule);
     let imports = ruleset.imports;
 
     let rules = quote! {
-        #(
-            #imports
-        )*
-        #(
-            #quoted_rules
-        )*
+        mod #mod_name {
+            use std::sync::Arc;
+            use super::{Ast, Parser, Origin};
+            use lsp_types::{Diagnostic, DiagnosticSeverity, Range, Url};
+
+            #(
+                #imports
+            )*
+            #(
+                #quoted_rules
+            )*
+        }
     };
 
-    println!("rules == \n{}", rules.to_string());
+    //println!("rules == \n{}", rules.to_string());
 
     rules.into()
 }
 
-fn quote_expr(expr: Expr<'_>) -> (TokenStream2, TokenStream2) {
+fn quote_expr(expr: Expr<'_>) -> (TokenStream2, TokenStream2, TokenStream2) {
     match expr {
         Expr::Var(name) => {
             let name = syn::Ident::new(&format!("parse_{}", name), Span::call_site());
-            (quote! { #name(s) }, quote! { _ })
+            let expr = quote! { #name(uri, p) };
+            let pat = quote! { _ };
+            let ty = quote! { _ };
+            (expr, pat, ty)
         },
         Expr::Enum(variants) => {
             let mut exprs = Vec::new();
+            let mut ty_opt = None;
             for variant in variants {
-                let (expr, _pat) = quote_expr(variant);
+                let (expr, _pat, ty) = quote_expr(variant);
                 exprs.push(expr);
+                if ty_opt.is_none() {
+                    ty_opt = Some(ty);
+                }
             }
             let expr = quote! {
                 loop {
+                    let mut message = String::from("no rule matched: [");
+                    let mut need_comma = false;
                     #(
-                        if let Some(ret) = #exprs {
-                            break Some(ret);
+                        match #exprs {
+                            Ok(ret) => break Ok(ret),
+                            Err(e) => {
+                                if need_comma {
+                                    message.push_str(", ");
+                                }
+                                message.push_str(&e.message[..]);
+                                need_comma = true;
+                            },
                         }
                     )*
-                    break None;
+                    let diagnostic = Diagnostic {
+                        code: None,
+                        related_information: None,
+                        source: None,
+                        range: Range {
+                            start: p.position(),
+                            end: p.position(),
+                        },
+                        severity: Some(DiagnosticSeverity::Error),
+                        message: message,
+                    };
+                    break Err(diagnostic);
                 }
             };
             let pat = quote! { _ };
-            (expr, pat)
+            let ty = ty_opt.unwrap_or_else(|| quote! { _ });
+
+            (expr, pat, ty)
         },
         Expr::Map(expr, rust_expr) => {
-            let (expr, pat) = quote_expr(*expr);
+            let (expr, pat, ty) = quote_expr(*expr);
             let expr = quote! {
-                (#expr).map(|(#pat, s)| (#rust_expr, s))
+                {
+                    let start = p.position();
+                    (#expr).map(|(#pat, p): (#ty, _)| {
+                        let end = p.position();
+                        let range = Range { start, end };
+                        let uri = uri.clone();
+                        let origin = Origin::Document { uri, range };
+                        let expr = (#rust_expr, origin).into();
+                        (expr, p)
+                    })
+                }
             };
             let pat = quote! { _ };
-            (expr, pat)
+            let ty = quote! { _ };
+            (expr, pat, ty)
         },
         Expr::Seq(fields) => {
             let mut exprs = Vec::with_capacity(fields.len());
             let mut pats = Vec::with_capacity(fields.len());
             let mut names = Vec::with_capacity(fields.len());
+            let mut tys = Vec::with_capacity(fields.len());
             for (i, field) in fields.into_iter().enumerate() {
-                let (expr, pat) = quote_expr(field);
+                let (expr, pat, ty) = quote_expr(field);
                 exprs.push(expr);
                 pats.push(pat);
                 names.push(syn::Ident::new(&format!("e{}", i), Span::call_site()));
+                tys.push(ty);
             }
             let names = &names[..];
+            let tys= &tys[..];
             let expr = quote! {
                 loop {
                     #(
-                        let (#names, s) = match #exprs {
-                            None => break None,
-                            Some(ret) => ret,
+                        let (#names, p): (#tys, _) = match #exprs {
+                            Err(e) => break Err(e),
+                            Ok(ret) => ret,
                         };
                     )*
-                    let s = match skip_whitespace(s) {
-                        None => break None,
-                        Some(()) => (),
-                    };
-                    break Some(((#(#names,)*), s));
+                    break Ok(((#(#names,)*), p));
                 }
             };
             let pat = quote! {
                 (#(#pats,)*)
             };
-            (expr, pat)
+            let ty = quote! {
+                (#(#tys,)*)
+            };
+            (expr, pat, ty)
         },
         Expr::Lit(lit) => {
             let expr = quote! {
                 {
                     use unicode_segmentation::UnicodeSegmentation;
-                    let mut iter = s.split_word_bounds();
+                    let p = skip_whitespace(uri, p);
+                    let mut iter = p.rest().split_word_bounds();
+                    let start = p.position();
                     let mut seek = #lit;
-                    loop {
+                    let opt = loop {
                         if seek == "" {
-                            break Some(((), &s[#lit.len()..]));
+                            let p = p.advance(#lit.len());
+                            let end = p.position();
+                            let range = Range { start, end };
+                            let uri = uri.clone();
+                            let origin = Origin::Document { uri, range };
+                            break Some((Ast::new((), origin), p));
                         }
                         match iter.next() {
                             None => break None,
@@ -465,39 +514,71 @@ fn quote_expr(expr: Expr<'_>) -> (TokenStream2, TokenStream2) {
                                 }
                             },
                         }
-                    }
+                    };
+                    opt.ok_or_else(|| Diagnostic {
+                        code: None,
+                        related_information: None,
+                        source: None,
+                        range: Range {
+                            start: start,
+                            end: start,
+                        },
+                        severity: Some(DiagnosticSeverity::Error),
+                        message: format!("expected \"{}\"", #lit),
+                    })
                 }
             };
-            let pat = quote! { () };
-            (expr, pat)
+            let pat = quote! { _ };
+            let ty = quote! { Ast<()> };
+            (expr, pat, ty)
         },
-        Expr::Bind(name, expr) => {
-            let name = syn::Ident::new(name, Span::call_site());
-            let (expr, _pat) = quote_expr(*expr);
-            let pat = quote! { #name };
-            (expr, pat)
+        Expr::Bind(pat, expr) => {
+            let (expr, _pat, ty) = quote_expr(*expr);
+            let pat = quote! { #pat };
+            (expr, pat, ty)
         },
         Expr::Regex(regex) => {
             let expr = quote! {
                 {
+                    let start = p.position();
                     let regex = regex::Regex::new(#regex).unwrap();
-                    let iter = regex.splitn(s, 2);
-                    let first = iter.next().unwrap();
-                    if first == "" {
+                    let mut iter = regex.splitn(&p.rest(), 2).fuse();
+                    let first = iter.next().unwrap_or("");
+
+                    let opt = if first == "" {
                         match iter.next() {
                             None => None,
-                            Some(new_s) => {
-                                let len = s.len() - new_s.len();
-                                Some((&s[..len], new_s))
+                            Some(rest) => {
+                                let matched_len = p.rest().len() - rest.len();
+                                let matched = &p.rest()[..matched_len];
+                                let matched = String::from(matched);
+                                let p = p.advance(matched_len);
+                                let end = p.position();
+                                let range = Range { start, end };
+                                let uri = uri.clone();
+                                let origin = Origin::Document { uri, range };
+                                Some((Ast::new(matched, origin), p))
                             },
                         }
                     } else {
                         None
-                    }
+                    };
+                    opt.ok_or_else(|| Diagnostic {
+                        code: None,
+                        related_information: None,
+                        source: None,
+                        range: Range {
+                            start: start,
+                            end: start,
+                        },
+                        severity: Some(DiagnosticSeverity::Error),
+                        message: format!("expected /{}/", #regex),
+                    })
                 }
             };
             let pat = quote! { _ };
-            (expr, pat)
+            let ty = quote! { Ast<String> };
+            (expr, pat, ty)
         },
     }
 }

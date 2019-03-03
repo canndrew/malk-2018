@@ -1,63 +1,148 @@
-use super::*;
+use std::sync::Arc;
+use std::ops::Deref;
+use lsp_types::{Range, Position, Diagnostic, DiagnosticSeverity, Url};
+use crate::core::Term;
 
-use crate::lexer::{Span, Token, TokenKind, TokensRef, LexError, TextPos};
-use lsp_types::{Range, Diagnostic};
-
-pub use self::expr::*;
-pub use self::pat::*;
-pub use self::ident::*;
-pub use self::composite_term::*;
-pub use self::composite_type::*;
-pub use self::struct_term::*;
-pub use self::struct_type::*;
-pub use self::composite_pat::*;
-pub use self::struct_pat::*;
-pub use self::enum_type::*;
-pub use self::neg_func_term::*;
-pub use self::enum_term_or_func::*;
-
-mod ident;
-mod expr;
-mod pat;
-mod composite_term;
-mod composite_type;
-mod struct_term;
-mod struct_type;
-mod composite_pat;
-mod struct_pat;
-mod enum_type;
-mod neg_func_term;
-mod enum_term_or_func;
-
-static SYMBOL_TABLE: &[&str] = &[";", ":", "#", ",", "=", "..", "=>", "->"];
-
-#[derive(Debug, Fail)]
-pub enum ParseError {
-    #[fail(display = "{}", _0)]
-    Lex(LexError),
-    #[fail(display = "parse error")]
-    Parse(Vec<Diagnostic>),
-    #[fail(display = "debug: {}", _0)]
-    Debug(String),
+grammar_macro::grammar! {
+    mod grammar;
 }
 
-impl From<ParseError> for Result<Vec<Diagnostic>, Error> {
-    fn from(parse_error: ParseError) -> Result<Vec<Diagnostic>, Error> {
-        match parse_error {
-            ParseError::Lex(err) => err.into(),
-            ParseError::Parse(diagnostics) => Ok(diagnostics),
-            ParseError::Debug(s) => bail!("debug: {}", s),
-        }
+#[derive(Clone)]
+pub enum Origin {
+    Document {
+        uri: Arc<Url>,
+        range: Range,
+    },
+    Substitute {
+        subject: Box<Origin>,
+        variable: Box<Origin>,
+        value: Box<Origin>,
+    },
+}
+
+#[derive(Clone)]
+pub struct Ast<T: ?Sized> {
+    pub node: Box<T>,
+    pub origin: Origin,
+}
+
+impl<T> Deref for Ast<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.node
     }
 }
 
-pub fn parse(code: &str) -> Result<Expr, ParseError> {
-    let lexed = match lexer::lex(code, SYMBOL_TABLE) {
-        Ok(lexed) => lexed,
-        Err(e) => return Err(ParseError::Lex(e)),
+impl<T> From<(T, Origin)> for Ast<T> {
+    fn from((node, origin): (T, Origin)) -> Ast<T> {
+        Ast::new(node, origin)
+    }
+}
+
+impl<T> From<(Ast<T>, Origin)> for Ast<T> {
+    fn from((ast, _origin): (Ast<T>, Origin)) -> Ast<T> {
+        ast
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Parser<'s> {
+    s: &'s str,
+    byte_pos: usize,
+    line: usize,
+    character: usize,
+}
+
+impl<T> Ast<T> {
+    fn new(node: T, origin: Origin) -> Ast<T> {
+        let node = Box::new(node);
+        Ast {
+            node, origin,
+        }
+    }
+
+    fn into_box(self) -> Box<T> {
+        self.node
+    }
+
+    fn into_inner(self) -> T {
+        *self.node
+    }
+}
+
+impl<'s> Parser<'s> {
+    fn position(&self) -> Position {
+        Position {
+            line: self.line as u64,
+            character: self.character as u64,
+        }
+    }
+
+    fn advance(mut self, bytes: usize) -> Parser<'s> {
+        log::trace!("advancing {:#?}", self);
+        let mut chars = self.s[self.byte_pos .. (self.byte_pos + bytes)].chars().peekable();
+        loop {
+            match chars.next() {
+                None => break,
+                Some('\r') => {
+                    match chars.peek() {
+                        None => {
+                            if let Some('\n') = self.s[(self.byte_pos + bytes)..].chars().next() {
+                                panic!("can't advance into middle of \"\\r\\n\" line-break.");
+                            }
+                            break;
+                        },
+                        Some('\n') => (),
+                        _ => {
+                            self.line += 1;
+                            self.character = 0;
+                        },
+                    }
+                },
+                Some('\n') => {
+                    self.line += 1;
+                    self.character = 0;
+                },
+                Some(c) => {
+                    let mut units = [0; 2];
+                    let units = c.encode_utf16(&mut units[..]);
+                    self.character += units.len();
+                },
+            }
+        }
+        self.byte_pos += bytes;
+        self
+    }
+
+    fn rest(&self) -> &'s str {
+        &self.s[self.byte_pos..]
+    }
+}
+
+pub fn parse_doc(uri: &Arc<Url>, text: &str) -> Result<Ast<Term>, Diagnostic> {
+    let p = Parser {
+        s: text,
+        byte_pos: 0,
+        line: 0,
+        character: 0,
     };
 
-    debug!("lexed the code. parsing");
-    parse_expr(lexed.borrow())
+    let (term, p) = grammar::parse_any_term(uri, p)?;
+    let p = grammar::skip_whitespace(uri, p);
+    if p.byte_pos != text.len() {
+        return Err(Diagnostic {
+            code: None,
+            related_information: None,
+            source: None,
+            severity: Some(DiagnosticSeverity::Error),
+            range: Range {
+                start: p.position(),
+                end: p.position(),
+            },
+            message: String::from("expected end of input"),
+        });
+    }
+    Ok(term)
 }
 

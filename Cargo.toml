@@ -28,4 +28,5 @@ wasmer-runtime = { path = "../wasmer/lib/runtime" }
 grammar-macro = { path = "grammar-macro" }
 regex = "*"
 unicode-segmentation = "*"
+backtrace = "*"
 

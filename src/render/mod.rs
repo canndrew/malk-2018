@@ -1,318 +1,405 @@
 use super::*;
-use crate::parser::*;
+use crate::parser::Ast;
+use crate::core::{Pat, Term, Ident};
 
-impl fmt::Display for Expr {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Expr::Let { pat, expr, body, .. } => {
-                write!(fmt, "let ({}) = ({}); {}", pat, expr, body)
-            },
-            Expr::Parens(_, expr) => {
-                write!(fmt, "({})", expr)
-            },
-            Expr::Var(ident) => {
-                write!(fmt, "{}", ident.name())
-            },
-            Expr::UnitTerm(..) => {
-                write!(fmt, "{{}}")
-            },
-            Expr::UnitType(..) => {
-                write!(fmt, "#{{}}")
-            },
-            Expr::PairTerm { head, tail, .. } => {
-                match &head.name {
-                    Some(name) => {
-                        write!(fmt, "{{{} = ({}), .. ({})}}", name.name(), head.expr, tail)
-                    },
-                    None => {
-                        write!(fmt, "{{({}), .. ({})}}", head.expr, tail)
-                    },
-                }
-            },
-            Expr::PairType { head, tail, .. } => {
-                match &head.name {
-                    Some(name) => {
-                        write!(fmt, "#{{{}: ({}), .. ({})}}", name.name(), head.expr, tail)
-                    },
-                    None => {
-                        write!(fmt, "#{{({}), .. ({})}}", head.expr, tail)
-                    },
-                }
-            },
-            Expr::NeverType(..) => {
-                write!(fmt, "#[]")
-            },
-            Expr::EnumType { head, tail, .. } => {
-                match &head.name {
-                    Some(name) => {
-                        write!(fmt, "#[{}: ({}), .. ({})]", name.name(), head.expr, tail)
-                    },
-                    None => {
-                        write!(fmt, "#[({}), .. ({})]", head.expr, tail)
-                    },
-                }
-            },
-            Expr::NegFuncTerm { pat, body, .. } => {
-                write!(fmt, "({}) => ({})", pat, body)
-            },
-            Expr::NegFuncType { pat, body, .. } => {
-                write!(fmt, "({}) -> ({})", pat, body)
-            },
-            Expr::Number(ident) => {
-                write!(fmt, "{}", ident.name())
-            },
-            Expr::String(ident) => {
-                write!(fmt, "\"{}\"", ident.name())
-            },
-            Expr::EnumLeft { elem, .. } => {
-                match &elem.name {
-                    Some(name) => {
-                        write!(fmt, "[{} = ({})]", name.name(), elem.expr)
-                    },
-                    None => {
-                        write!(fmt, "[{}]", elem.expr)
-                    },
-                }
-            },
-            Expr::EnumRight { expr, .. } => {
-                write!(fmt, "[.. {}]", expr)
-            },
-            Expr::EnumFuncTerm { pat, body, tail, .. } => {
-                match &pat.name {
-                    Some(name) => {
-                        write!(fmt, "[{} = ({}) => ({}), .. {}]", name.name(), pat.pat, body, tail)
-                    },
-                    None => {
-                        write!(fmt, "[({}) => ({}), .. {}]", pat.pat, body, tail)
-                    },
-                }
-            },
-            Expr::EnumFuncType { pat, body, tail, .. } => {
-                match &pat.name {
-                    Some(name) => {
-                        write!(fmt, "[{} = ({}) -> ({}), .. {}]", name.name(), pat.pat, body, tail)
-                    },
-                    None => {
-                        write!(fmt, "[({}) -> ({}), .. {}]", pat.pat, body, tail)
-                    },
-                }
-            },
-            Expr::NeverFunc(..) => {
-                write!(fmt, "[]")
-            },
-            Expr::App { func, arg, .. } => {
-                write!(fmt, "({})({})", func, arg)
-            },
-        }
-    }
+const MAX_LINE_WIDTH: usize = 80;
+
+enum Chunk<'s> {
+    Str(&'s str),
+    String(String),
+    Joined(Vec<Chunk<'s>>),
+    Delimited {
+        seperator: &'s str,
+        sections: Vec<Chunk<'s>>,
+        tail: Option<Box<Chunk<'s>>>,
+    },
+    Brackets {
+        open: &'s str,
+        close: &'s str,
+        inner: Box<Chunk<'s>>,
+    },
 }
 
-impl fmt::Display for Pat {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Pat::Parens(_, pat) => {
-                write!(fmt, "({})", pat)
-            },
-            Pat::Var(ident) => {
-                write!(fmt, "{}", ident.name())
-            },
-            Pat::Unit(..) => {
-                write!(fmt, "{{}}")
-            },
-            Pat::Pair { head, tail, .. } => {
-                match &head.name {
-                    Some(name) => {
-                        write!(fmt, "{{{} = ({}), .. ({})}}", name.name(), head.pat, tail)
-                    },
-                    None => {
-                        write!(fmt, "{{({}), .. ({})}}", head.pat, tail)
-                    },
-                }
-            },
-        }
-    }
-}
-/*
-struct Renderer {
-    s: String,
-    line_length: usize,
-    unclosed_brackets: Vec<char>,
-    indent: usize,
-    line_pos: usize,
-    line_unclosed_brackets: usize,
-}
-
-#[derive(PartialOrd, Ord, PartialEq, Eq)]
+#[derive(PartialEq, PartialOrd)]
 enum Precedence {
-    Parens,
-    Let,
-    FuncApp,
+    Statement = 0,
+    Operator = 1,
+    App = 2,
+    Enclosed = 3,
+    Brackets = 4,
 }
 
-impl Renderer {
-    fn new_line(&mut self) {
-        if self.line_unclosed_brackets > self.unclosed_brackets.len() {
-            self.indent += 4;
-            self.line_unclosed_brackets = self.unclosed_brackets.len();
+macro_rules! list_cons (
+    ($t:ident, $cons:ident, $nil:ident, $name:ident, $head:ident, $tail:ident, $open:literal, $close:literal) => ({
+        let mut head = $head;
+        let mut tail = $tail;
+        let mut name = $name;
+        let mut elems = Vec::new();
+        let tail = loop {
+            let mut joined = Vec::new();
+            if let Some(name) = name {
+                joined.push(Chunk::Str(&name.node[..]));
+                joined.push(Chunk::Str(" = "));
+            }
+            joined.push(head.prerender(Precedence::Operator));
+            elems.push(Chunk::Joined(joined));
+            match &*tail.node {
+                $t::$cons { name: new_name, head: new_head, tail: new_tail } => {
+                    name = new_name;
+                    head = new_head;
+                    tail = new_tail;
+                },
+                $t::$nil => break None,
+                _ => break Some(Box::new(Chunk::Joined(vec![
+                    Chunk::Str(".. "),
+                    tail.prerender(Precedence::Operator),
+                ]))),
+            }
+        };
+        Chunk::Brackets {
+            open: $open,
+            close: $close,
+            inner: Box::new(Chunk::Delimited {
+                seperator: ",",
+                sections: elems,
+                tail: tail,
+            }),
         }
+    })
+);
 
-        self.s.push('\n');
-        for _ in 0..self.indent {
-            self.s.push(' ');
+macro_rules! list_nil (($open:literal, $close:literal) => ({
+    Chunk::Brackets {
+        open: $open,
+        close: $close,
+        inner: Box::new(Chunk::Joined(Vec::new())),
+    }
+}));
+
+macro_rules! at_left(($ident:ident, $left:ident) => ({
+    match $ident {
+        Some(name) => Chunk::Joined(vec![
+            Chunk::Str("@"),
+            name.prerender(),
+            Chunk::Str(" = "),
+            $left.prerender(Precedence::Operator),
+        ]),
+        None => Chunk::Joined(vec![
+            Chunk::Str("@"),
+            $left.prerender(Precedence::Operator),
+        ]),
+    }
+}));
+
+macro_rules! at_right(($right:ident) => ({
+    Chunk::Joined(vec![
+        Chunk::Str("@"),
+        Chunk::Str(".. "),
+        $right.prerender(Precedence::Operator),
+    ])
+}));
+
+impl Term {
+    fn prerender(&self, container_precedence: Precedence) -> Chunk<'_> {
+        let chunk = match self {
+            Term::Pair { name, head, tail } => list_cons!(Term, Pair, Unit, name, head, tail, "{", "}"),
+            Term::Unit => list_nil!("{", "}"),
+            Term::PairType { name, head, tail } => list_cons!(Term, PairType, UnitType, name, head, tail, "#{", "}"),
+            Term::UnitType => list_nil!("#{", "}"),
+            Term::EnumType { name, head, tail } => list_cons!(Term, EnumType, NeverType, name, head, tail, "@{", "}"),
+            Term::NeverType => list_nil!("@{", "}"),
+            Term::Case { name, head, tail } => list_cons!(Term, Case, Nothing, name, head, tail, "[", "]"),
+            Term::Nothing => list_nil!("[", "]"),
+            Term::CaseType { name, head, tail } => list_cons!(Term, CaseType, NothingType, name, head, tail, "#[", "]"),
+            Term::NothingType => list_nil!("#[", "]"),
+            Term::Var(ident) => ident.prerender(),
+            Term::Type { bumps } => {
+                let mut s = prerender_bumps(*bumps);
+                s.push_str("Type");
+                Chunk::String(s)
+            },
+            Term::Level { bumps } => {
+                let mut s = prerender_bumps(*bumps);
+                s.push_str("Level");
+                Chunk::String(s)
+            },
+            Term::InjLeft { ident, left } => at_left!(ident, left),
+            Term::InjRight { right } => at_right!(right),
+            Term::Func { pat, body } => {
+                Chunk::Joined(vec![
+                    pat.prerender(Precedence::Enclosed),
+                    Chunk::Str(" => "),
+                    body.prerender(Precedence::Operator),
+                ])
+            },
+            Term::FuncType { pat, body } => {
+                Chunk::Joined(vec![
+                    pat.prerender(Precedence::Enclosed),
+                    Chunk::Str(" -> "),
+                    body.prerender(Precedence::Operator),
+                ])
+            },
+            Term::App { func, arg } => {
+                Chunk::Joined(vec![
+                    func.prerender(Precedence::App),
+                    arg.prerender(Precedence::Brackets),
+                ])
+            },
+            Term::Let { pat, expr, body } => {
+                let mut pat = pat;
+                let mut expr = expr;
+                let mut body = body;
+                let mut elems = Vec::new();
+                let tail = loop {
+                    elems.push(Chunk::Joined(vec![
+                        Chunk::Str("let "),
+                        pat.prerender(Precedence::Operator),
+                        Chunk::Str(" = "),
+                        expr.prerender(Precedence::Operator),
+                    ]));
+                    match &*body.node {
+                        Term::Let { pat: new_pat, expr: new_expr, body: new_body } => {
+                            pat = new_pat;
+                            expr = new_expr;
+                            body = new_body;
+                        },
+                        Term::Unit => break None,
+                        body => break Some(Box::new(body.prerender(Precedence::Statement))),
+                    }
+                };
+                Chunk::Delimited {
+                    seperator: ";",
+                    sections: elems,
+                    tail: tail,
+                }
+            },
+            Term::String(s) => {
+                Chunk::String(format!("\"{}\"", s))
+            },
+            Term::Typed { term, ty } => {
+                Chunk::Joined(vec![
+                    term.prerender(Precedence::App),
+                    Chunk::Str(": "),
+                    ty.prerender(Precedence::App),
+                ])
+            },
+        };
+        let precedence = match self {
+            Term::Unit |
+            Term::UnitType |
+            Term::Pair { .. } |
+            Term::PairType { .. } |
+            Term::EnumType { .. } |
+            Term::NeverType |
+            Term::Case { .. } |
+            Term::CaseType { .. } |
+            Term::Nothing |
+            Term::NothingType => Precedence::Brackets,
+
+            Term::Var(..) |
+            Term::Type { .. } |
+            Term::Level { .. } |
+            Term::String(..) => Precedence::Enclosed,
+
+            Term::Typed { .. } |
+            Term::InjLeft { .. } |
+            Term::InjRight { .. } |
+            Term::Func { .. } |
+            Term::FuncType { .. } => Precedence::Operator,
+
+            Term::App { .. } => Precedence::App,
+            Term::Let { .. } => Precedence::Statement,
+        };
+        if precedence < container_precedence {
+            Chunk::Brackets {
+                open: "(",
+                close: ")",
+                inner: Box::new(chunk),
+            }
+        } else {
+            chunk
         }
-        self.line_pos = self.indent;
     }
 
-    fn open_bracket(&mut self, bracket_char: char) {
-        self.unclosed_brackets.push(bracket_char);
-        self.s.push(bracket_char);
-        self.line_pos += 1;
+    pub fn render(&self, before: &str, after: &str) -> String {
+        self.prerender(Precedence::App).render(before, after)
     }
+}
 
-    fn close_bracket(&mut self, bracket_char: char) {
-        let expected = unwrap!(self.unclosed_brackets.pop());
-        assert_eq!(bracket_char, expected.to_close_bracket());
-        self.s.push(bracket_char);
-        self.line_pos += 1;
-    }
-
-    fn push(&mut self, text: &str) {
-        if self.line_pos + text.len() > self.line_length && self.indent + text.len() <= self.line_length  {
-            self.new_line();
+impl Pat {
+    fn prerender(&self, container_precedence: Precedence) -> Chunk {
+        let chunk = match self {
+            Pat::Pair { name, head, tail } => list_cons!(Pat, Pair, Unit, name, head, tail, "{", "}"),
+            Pat::Unit => list_nil!("{", "}"),
+            Pat::Bind(name) => Chunk::Str(&name.node[..]),
+            Pat::ProjLeft { ident, left } => at_left!(ident, left),
+            Pat::ProjRight { right } => at_right!(right),
+            Pat::Typed { pat, ty } => {
+                Chunk::Joined(vec![
+                    pat.prerender(Precedence::App),
+                    Chunk::Str(": "),
+                    ty.prerender(Precedence::App),
+                ])
+            },
+        };
+        let precedence = match self {
+            Pat::Bind(..) => Precedence::Enclosed,
+            Pat::Unit |
+            Pat::Pair { .. } => Precedence::Brackets,
+            Pat::Typed { .. } |
+            Pat::ProjLeft { .. } |
+            Pat::ProjRight { .. } => Precedence::Operator,
+        };
+        if precedence < container_precedence {
+            Chunk::Brackets {
+                open: "(",
+                close: ")",
+                inner: Box::new(chunk),
+            }
+        } else {
+            chunk
         }
-        self.s.push_str(text);
-        self.line_pos += text.len();
     }
+}
 
-    fn render_expr(
-        &mut self,
-        expr: &Expr,
-        precedence: Precedence,
-    ) {
-        match expr {
-            Expr::Let { pat, expr, body, .. } => {
-                let needs_new_line = self.line_length < self.line_pos + 5;
-                let needs_bracket = needs_new_line || precedence >= Precedence::Let;
-                if needs_bracket {
-                    self.open_bracket('(');
-                }
-                if needs_new_line {
-                    self.new_line();
-                }
+impl Ident {
+    fn prerender(&self) -> Chunk {
+        let mut s = prerender_bumps(self.bumps);
+        s.push_str(&self.name);
+        Chunk::String(s)
+    }
+}
 
-                self.push("let ");
-                self.render_pat(pat, Precedence::Let);
-                self.push(" = ");
-                self.render_expr(expr, Precedence::Let);
-                self.push(";");
+fn prerender_bumps(bumps: u32) -> String {
+    let mut s = String::with_capacity(bumps as usize);
+    for _ in 0..bumps {
+        s.push('^');
+    }
+    s
+}
 
-                if needs_new_line {
-                    self.new_line();
+impl<'s> Chunk<'s> {
+    fn render(&self, before: &str, after: &str) -> String {
+        match self {
+            Chunk::Str(s) => String::from(*s),
+            Chunk::String(s) => s.clone(),
+            Chunk::Joined(chunks) => {
+                let mut before = String::from(before);
+                let mut ret = String::new();
+                for chunk in chunks {
+                    let next = chunk.render(&before, after);
+                    let mut lines = next.lines();
+                    if let (Some(line), Some(..)) = (lines.next_back(), lines.next_back()) {
+                        before = String::from(line);
+                    } else {
+                        before.push_str(&next);
+                    }
+                    ret.push_str(&next);
                 }
-                if needs_bracket {
-                    self.close_bracket(')');
-                }
+                ret
             },
-            Expr::Parens(_, expr) => {
-                self.open_bracket('(');
-                self.render_expr(expr, Precedence::Parens);
-                self.close_bracket(')');
-            },
-            Expr::Var(ident) => {
-                self.push(ident.name())
-            },
-            Expr::UnitTerm(_) => {
-                self.push("{}");
-            },
-            Expr::UnitType(_) => {
-                self.push("#{}");
-            },
-            Expr::PairTerm { head, tail, .. } => {
-                self.open_bracket('{');
-                let initial_indent = self.indent;
-                let initial_s_len = self.s.len();
-                'all_on_one_line {
-                    let mut tail = tail;
-                    self.render_composite_term_elem(head);
-                    loop {
-                        if self.indent > initial_indent {
-                            self.s.truncate(initial_s_len);
-                            break 'all_on_one_line;
-                        }
-                        match tail {
-                            Expr::UnitTerm(_) => {
-                                self.close_bracket('}');
-                                return;
-                            },
-                            Expr::PairTerm { head, tail } => {
-                                self.push(", ");
-                                self.render_composite_term_elem(head);
-                                tail = tail;
-                            },
-                            tail => {
-                                self.push(", .. ");
-
-                            },
-                        }
+            Chunk::Delimited { seperator, sections, tail } => {
+                if let Some(inline) = self.try_render_inline() {
+                    let full_width = before.width() + inline.width() + after.width();
+                    if full_width <= MAX_LINE_WIDTH {
+                        return inline;
                     }
                 }
+
+                let indent = before.len() - before.trim_start().len();
+                let next_line_before = String::from(&before[..indent]);
+                let mut ret = format!("\n{}", next_line_before);
+                for section in sections {
+                    let next = section.render(&next_line_before, "");
+                    ret.push_str(&next);
+                    ret.push_str(seperator);
+                    ret.push('\n');
+                    ret.push_str(&next_line_before);
+                }
+                if let Some(tail) = tail {
+                    let next = tail.render(&next_line_before, after);
+                    ret.push_str(&next);
+                }
+                ret
             },
-            Expr::PairType {
-                head: CompositeTypeElem,
-                tail: Box<Expr>,
-                span: Span,
-            },
-            Expr::NeverType(Span),
-            Expr::EnumType {
-                head: CompositeTypeElem,
-                tail: Box<Expr>,
-                span: Span,
-            },
-            Expr::NegFuncTerm {
-                pat: Box<Pat>,
-                body: Box<Expr>,
-                span: Span,
-            },
-            Expr::NegFuncType {
-                pat: Box<Pat>,
-                body: Box<Expr>,
-                span: Span,
-            },
-            Expr::Number(Ident),
-            Expr::String(Ident),
-            Expr::EnumLeft {
-                elem: CompositeTermElem,
-                span: Span,
-            },
-            Expr::EnumRight {
-                expr: Box<Expr>,
-                span: Span,
-            },
-            Expr::EnumFuncTerm {
-                pat: Box<CompositePatElem>,
-                body: Box<Expr>,
-                tail: Box<Expr>,
-                span: Span,
-            },
-            Expr::EnumFuncType {
-                pat: Box<CompositePatElem>,
-                body: Box<Expr>,
-                tail: Box<Expr>,
-                span: Span,
-            },
-            Expr::NeverFunc(Span),
-            Expr::App {
-                func: Box<Expr>,
-                arg: Box<Expr>,
-                span: Span,
+            Chunk::Brackets { open, close, inner } => {
+                if let Some(inner_inline) = inner.try_render_inline() {
+                    let full_width = before.width() + open.width() + inner_inline.width() + close.width() + after.width();
+                    if full_width <= MAX_LINE_WIDTH {
+                        return format!("{}{}{}", open, inner_inline, close);
+                    }
+                }
+                let indent = before.len() - before.trim_start().len();
+                let next_line_before = format!("{}    ", &before[..indent]);
+                let inner_rendered = inner.render(&next_line_before, "");
+                format!("{}\n{}{}\n{}", open, next_line_before, inner_rendered, close)
             },
         }
     }
 
-    fn render_pat(&mut self, pat: &Pat, precedence: Precedence) {
-        match pat {
+    fn try_render_inline(&self) -> Option<String> {
+        match self {
+            Chunk::Str(s) => {
+                if s.width() <= MAX_LINE_WIDTH {
+                    Some(String::from(*s))
+                } else {
+                    None
+                }
+            },
+            Chunk::String(s) => {
+                if s.width() <= MAX_LINE_WIDTH {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            },
+            Chunk::Joined(chunks) => {
+                let mut ret = String::new();
+                let mut width = 0;
+                for chunk in chunks {
+                    let next = chunk.try_render_inline()?;
+                    width += next.width();
+                    if width > MAX_LINE_WIDTH {
+                        return None;
+                    }
+                    ret.push_str(&next);
+                }
+                Some(ret)
+            },
+            Chunk::Delimited { seperator, sections, tail } => {
+                let mut ret = String::new();
+                let mut width = 0;
+                let mut iter = sections.iter().peekable();
+                while let Some(section) = iter.next() {
+                    let mut next = section.try_render_inline()?;
+                    if iter.peek().is_some() || tail.is_some() {
+                        next.push_str(seperator);
+                        next.push(' ');
+                    }
+                    width += next.width();
+                    if width > MAX_LINE_WIDTH {
+                        return None;
+                    }
+                    ret.push_str(&next);
+                }
+                if let Some(tail) = tail {
+                    let next = tail.try_render_inline()?;
+                    width += next.width();
+                    if width > MAX_LINE_WIDTH {
+                        return None;
+                    }
+                    ret.push_str(&next);
+                }
+                Some(ret)
+            },
+            Chunk::Brackets { open, close, inner } => {
+                let inner = inner.try_render_inline()?;
+                if open.width() + inner.width() + close.width() > MAX_LINE_WIDTH {
+                    return None;
+                }
+                Some(format!("{}{}{}", open, inner, close))
+            },
         }
     }
 }
-*/
 

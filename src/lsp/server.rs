@@ -1,5 +1,8 @@
 use super::*;
 
+use std::panic;
+use std::any::Any;
+
 use serde_json::json;
 
 pub trait LspServer {
@@ -28,6 +31,8 @@ where
     set_nonblocking(&stdout);
     */
 
+    //std::thread::sleep(std::time::Duration::from_secs(10));
+
     let stdin = Stdin::new()?;
     let stdout = Stdout::new()?;
 
@@ -48,6 +53,11 @@ where
     let mut result_senders: HashMap<u64, oneshot::Sender<Result<Value, ResponseError>>> = HashMap::new();
     //let stdin = BufReader::new(tokio::io::stdin());
     //let stdout = tokio::io::stdout();
+
+    panic::set_hook(Box::new(|_panic_info| {
+        let message = format!("{:?}", backtrace::Backtrace::new());
+        *unwrap!(PANIC_INFO.lock()) = Some(message);
+    }));
 
     trace!("starting lsp server");
     let unparsed_msgs_from_client = stream::unfold(stdin, |stdin| {
@@ -113,7 +123,7 @@ where
         .map(Either::A)
         .select(client_requests_rx.map(Either::B).infallible())
         //.and_then(|either| match either {
-        .and_then(move |either| -> BoxSendFuture<Option<Message>, Error> {match either {
+        .and_then(move |either| match either {
             Either::A(message_from_client) => match message_from_client {
                 Message::Notification(notification) => {
                     let params = notification.params;
@@ -128,8 +138,8 @@ where
                             do_notification::<DidChangeTextDocument, _, _>(S::did_change_text_document, &mut server, params)
                         },
                         _ => {
-                            future_bail!("unrecognised notification method '{}'", notification.method);
-                            //future::ok(None).into_send_boxed()
+                            trace!("unrecognised notification method '{}'", notification.method);
+                            future::ok(None).into_send_boxed()
                         },
                     }
                 },
@@ -148,7 +158,8 @@ where
                             do_request::<ExecuteCommand, _, _>(S::execute_command, &mut server, id, params)
                         },
                         _ => {
-                            future_bail!("unrecognised request method '{}'", request.method)
+                            trace!("unrecognised request method '{}'", request.method);
+                            future::ok(None).into_send_boxed()
                         }
                     }
                 },
@@ -158,7 +169,7 @@ where
                         Some(result_sender) => result_sender,
                         None => future_bail!("invalid response id"),
                     };
-                    result_sender.send(response.response);
+                    let _ = result_sender.send(response.response);
                     future::ok(None).into_send_boxed()
                 },
             },
@@ -166,28 +177,41 @@ where
                 result_senders.insert(request_to_client.id, result_sender);
                 future::ok(Some(Message::Request(request_to_client))).into_send_boxed()
             },
-        }})
+        })
         .filter_map(|opt| opt)
         .select(client_notifications_rx.map(Message::Notification).infallible())
     };
 
+    let print_message = |stdout, message| {
+        let json = Message::to_json(message);
+        let s = json.to_string();
+        trace!("dispatching message to client: {}", s);
+
+        let output = format!("Content-Length: {}\r\n\r\n{}", s.len(), s);
+        let output = output.into_bytes();
+        tokio::io::write_all(stdout, output)
+        .compat_context("error writing to stdout")
+        .map(|(stdout, _output)| stdout)
+        .and_then(|stdout| tokio::io::flush(stdout).compat_context("error flushing stdout"))
+    };
+
     let fut = {
         msgs_to_client
-        .fold(stdout, |stdout, message| {
-            let json = Message::to_json(message);
-            let s = json.to_string();
-            trace!("dispatching message to client: {}", s);
-
-            let output = format!("Content-Length: {}\r\n\r\n{}", s.len(), s);
-            let output = output.into_bytes();
-            tokio::io::write_all(stdout, output)
-            .compat_context("error writing to stdout")
-            .map(|(stdout, _output)| stdout)
-            .map(|wow| {
-                trace!("wrote to stdout");
-                wow
-            })
-            .and_then(|stdout| tokio::io::flush(stdout).compat_context("error flushing stdout"))
+        .map(Ok)
+        .fold(stdout, move |stdout, message_res| match message_res {
+            Ok(message) => print_message(stdout, message).into_send_boxed(),
+            Err(e) => {
+                let message = Message::Notification(NotificationMessage {
+                    method: String::from("window/showMessage"),
+                    params: json!(ShowMessageParams {
+                        typ: MessageType::Error,
+                        message: format!("malk server aborting: {}", e),
+                    }),
+                });
+                print_message(stdout, message)
+                .and_then(|_stdout| Err(e))
+                .into_send_boxed()
+            },
         })
         .map(|_stdout| ())
         .map_err(|err| {
@@ -201,7 +225,9 @@ where
         .compat_context("failed to start tokio runtime")?
     };
 
-    runtime.block_on(fut)
+    let res = runtime.block_on(fut);
+    trace!("exiting normally: {:?}", res);
+    res
 }
 
 fn do_request<R, F, S>(f: F, server: &mut S, id: u64, params: Value) -> BoxSendFuture<Option<Message>, Error>
@@ -216,16 +242,20 @@ where
         Ok(params) => params,
         Err(e) => future_bail!("error parsing params: {}", e), 
     };
-    f(server, params)
-    .then(move |res| {
-        let response = match res {
-            Ok(result) => Ok(unwrap!(serde_json::to_value(result))),
-            Err(err) => Err(err),
-        };
-        Ok(Some(Message::Response(ResponseMessage {
-            id: id,
-            response: response,
-        })))
+    panic::AssertUnwindSafe(f(server, params))
+    .catch_unwind()
+    .then(move |res| match res {
+        Ok(res) => {
+            let response = match res {
+                Ok(result) => Ok(unwrap!(serde_json::to_value(result))),
+                Err(err) => Err(err),
+            };
+            Ok(Some(Message::Response(ResponseMessage {
+                id: id,
+                response: response,
+            })))
+        },
+        Err(_e) => Err(get_panic_info()),
     })
     .into_send_boxed()
 }
@@ -233,15 +263,34 @@ where
 fn do_notification<N, F, S>(f: F, server: &mut S, params: Value) -> BoxSendFuture<Option<Message>, Error>
 where
     N: Notification,
-    N::Params: DeserializeOwned,
-    F: FnOnce(&mut S, N::Params),
+    N::Params: DeserializeOwned + panic::UnwindSafe,
+    F: FnOnce(&mut S, N::Params) + panic::UnwindSafe,
     S: LspServer + Send + 'static,
 {
     let params = match serde_json::from_value(params) {
         Ok(params) => params,
         Err(e) => future_bail!("error parsing params: {}", e), 
     };
-    f(server, params);
-    future::ok(None).into_send_boxed()
+    let server = panic::AssertUnwindSafe(server);
+    let res = std::panic::catch_unwind(|| {
+        let panic::AssertUnwindSafe(server) = server;
+        f(server, params);
+    });
+    match res {
+        Ok(()) => future::ok(None).into_send_boxed(),
+        Err(_e) => future::err(get_panic_info()).into_send_boxed(),
+    }
+}
+
+lazy_static! {
+    static ref PANIC_INFO: Mutex<Option<String>> = Mutex::new(None);
+}
+
+fn get_panic_info() -> Error {
+    let message = match unwrap!(PANIC_INFO.lock()).take() {
+        Some(panic_info) => panic_info,
+        None => String::from("(no stack trace available)"),
+    };
+    Error::from(failure::err_msg(message))
 }
 

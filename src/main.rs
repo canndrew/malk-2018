@@ -23,8 +23,9 @@ use log::{debug, trace, warn, error};
 use tokio::io::{AsyncRead, AsyncWrite};
 use clap::{Arg, App, AppSettings, SubCommand};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use unicode_width::UnicodeWidthStr;
 
-use std::sync::atomic;
+use std::sync::{atomic, Mutex};
 use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
 use std::borrow::Cow;
@@ -39,6 +40,7 @@ use std::path::Path;
 
 use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
+use self::lsp_types_ext::*;
 
 macro_rules! future_bail {
     ($($t:expr),*) => ({
@@ -49,12 +51,15 @@ macro_rules! future_bail {
 mod lsp;
 mod result_ext;
 mod future_ext;
+mod lsp_types_ext;
 mod server;
-mod lexer;
-mod compile;
 mod render;
-mod parser;
-mod wasm;
+//mod lexer;
+//mod compile;
+//mod render;
+pub mod core;
+pub mod parser;
+//mod wasm;
 
 fn main() -> Result<(), Error> {
     let matches = {
@@ -79,6 +84,7 @@ fn main() -> Result<(), Error> {
 
     match unwrap!(matches.subcommand_name()) {
         "mls" => lsp::run(|client| server::Server::new(client)),
+        /*
         "run" => {
             let run_matches = unwrap!(matches.subcommand_matches("run"));
             let filename = unwrap!(run_matches.value_of("file"));
@@ -90,6 +96,7 @@ fn main() -> Result<(), Error> {
 
             Ok(())
         },
+        */
         _ => unreachable!(),
     }
 }

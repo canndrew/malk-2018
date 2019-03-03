@@ -9,7 +9,7 @@ proc-macro = true
 
 [dependencies]
 quote = "*"
-syn = { version = "*", features = ["full"] }
+syn = { version = "*", features = ["full", "extra-traits"] }
 proc-macro2 = "*"
 unicode-segmentation = "*"
 
