@@ -1,7 +1,6 @@
 #![feature(pattern)]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
-#![feature(try_from)]
 #![feature(nll)]
 #![feature(label_break_value)]
 #![feature(integer_atomics)]
@@ -29,7 +28,7 @@ use std::sync::{atomic, Mutex};
 use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
 use std::borrow::Cow;
-use std::{fmt, io, slice, fs, str};
+use std::{fmt, io, slice, fs, str, mem};
 use std::fmt::Display;
 use std::io::{Read, Write, BufReader};
 use std::str::FromStr;
@@ -37,27 +36,32 @@ use std::collections::HashMap;
 use std::char;
 use std::marker::PhantomData;
 use std::path::Path;
+use std::sync::Arc;
+use lsp_types::Url;
 
 use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
 use self::lsp_types_ext::*;
 
+/*
 macro_rules! future_bail {
     ($($t:expr),*) => ({
         return futures::future::err(failure::format_err!($($t),*)).into_send_boxed();
     })
 }
+*/
 
-mod lsp;
+//mod lsp;
 mod result_ext;
 mod future_ext;
 mod lsp_types_ext;
-mod server;
-mod render;
+//mod server;
+//mod render;
 //mod lexer;
 //mod compile;
 //mod render;
-pub mod core;
+//pub mod core;
+pub mod syntax;
 pub mod parser;
 //mod wasm;
 
@@ -83,21 +87,27 @@ fn main() -> Result<(), Error> {
     };
 
     match unwrap!(matches.subcommand_name()) {
-        "mls" => lsp::run(|client| server::Server::new(client)),
-        /*
+        //"mls" => lsp::run(|client| server::Server::new(client)),
         "run" => {
             let run_matches = unwrap!(matches.subcommand_matches("run"));
             let filename = unwrap!(run_matches.value_of("file"));
-            let code = match fs::read_to_string(filename) {
-                Ok(code) => code,
-                Err(e) => bail!("error opening file: {}", e),
-            };
-            compile::run(&code)?;
+            unwrap!(run(filename));
 
             Ok(())
         },
-        */
         _ => unreachable!(),
     }
+}
+
+fn run(filename: &str) -> Result<(), Error> {
+    let code = match fs::read_to_string(filename) {
+        Ok(code) => code,
+        Err(e) => bail!("error opening file: {}", e),
+    };
+    let uri = Arc::new(Url::parse(&format!("file://{}", filename))?);
+    let term = unwrap!(parser::parse_doc(&uri, &code));
+    //let rendered = term.render("", "");
+    //println!("rendered: {}", rendered);
+    Ok(())
 }
 

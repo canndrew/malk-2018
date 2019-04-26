@@ -27,6 +27,7 @@ use lsp_types::{
     ServerCapabilities,
     MessageType,
     TextDocumentPositionParams,
+    TextDocumentContentChangeEvent,
     DocumentHighlightKind,
     ShowMessageParams,
     Url,
@@ -80,9 +81,14 @@ impl LspServer for Server {
         trace!("in did_open_text_document");
         let uri = params.text_document.uri;
         let text = params.text_document.text;
-        let doc = Doc::new(uri.clone(), text);
+        let doc = Doc::new(uri.clone());
         trace!("created doc");
         let doc = self.open_docs.entry(uri.clone()).or_insert(doc);
+        doc.change_content(TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: text,
+        });
         self.client.publish_diagnostics(uri, doc.diagnostics());
         trace!("published diagnostics");
     }
@@ -134,6 +140,7 @@ impl LspServer for Server {
         -> BoxSendFuture<Option<Value>, ResponseError>
     {
         trace!("in execute_command");
+        /*
         if params.command == "normalise" {
             trace!("its a normalise");
             let cursor_position = match &self.cursor_position {
@@ -148,23 +155,23 @@ impl LspServer for Server {
                 Some(term) => term,
                 None => return future::ok(None).into_send_boxed(),
             };
-            let app = match term.app_at_position(cursor_position.position) {
-                Some(app) => app,
+            let redex = match term.redex_at_position(cursor_position.position) {
+                Some(redex) => redex,
                 None => return future::ok(None).into_send_boxed(),
             };
-            let (uri, range) = match &app.origin {
+            let (uri, range) = match &redex.origin {
                 Origin::Document { uri, range } => (uri, range),
                 _ => return future::ok(None).into_send_boxed(),
             };
             let before = {
                 unwrap!(doc.text().lines().nth(range.start.line as usize))
-                .split_to_lsp_character_pos(range.start.character as usize)
+                .split_to_lsp_character_pos(range.start.character)
             };
             let after = {
                 unwrap!(doc.text().lines().nth(range.end.line as usize))
-                .split_from_lsp_character_pos(range.end.character as usize)
+                .split_from_lsp_character_pos(range.end.character)
             };
-            let reduced = app.reduce_head();
+            let reduced = redex.reduce_head();
             let rendered = reduced.render(before, after);
             let edit = WorkspaceEdit {
                 changes: None,
@@ -191,6 +198,7 @@ impl LspServer for Server {
             );
             return future::ok(None).into_send_boxed();
         }
+        */
         future::ok(None).into_send_boxed()
     }
 }

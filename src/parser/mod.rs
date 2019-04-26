@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::ops::Deref;
 use lsp_types::{Range, Position, Diagnostic, DiagnosticSeverity, Url};
-use crate::core::Term;
+use crate::syntax::Expr;
 
 grammar_macro::grammar! {
     mod grammar;
@@ -17,6 +17,11 @@ pub enum Origin {
         subject: Box<Origin>,
         variable: Box<Origin>,
         value: Box<Origin>,
+    },
+    TypeOf(Box<Origin>),
+    InjLeftOuter {
+        depth: u32,
+        inner: Box<Origin>,
     },
 }
 
@@ -120,7 +125,7 @@ impl<'s> Parser<'s> {
     }
 }
 
-pub fn parse_doc(uri: &Arc<Url>, text: &str) -> Result<Ast<Term>, Diagnostic> {
+pub fn parse_doc(uri: &Arc<Url>, text: &str) -> Result<Ast<Expr>, Diagnostic> {
     let p = Parser {
         s: text,
         byte_pos: 0,

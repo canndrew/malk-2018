@@ -1,4 +1,3 @@
-use crate::core::Bump;
 use crate::parser::Ast;
 
 #[derive(Clone)]
@@ -22,6 +21,17 @@ impl Ident {
     }
 }
 
+impl<'s> Ast<IdentRef<'s>> {
+    pub fn unbump(mut self) -> Option<Ast<IdentRef<'s>>> {
+        if self.bumps == 0 {
+            return None;
+        }
+        
+        self.node.bumps -= 1;
+        Some(self)
+    }
+}
+
 impl<'s> IdentRef<'s> {
     pub fn to_ident(self) -> Ident {
         Ident {
@@ -31,6 +41,7 @@ impl<'s> IdentRef<'s> {
     }
 }
 
+/*
 impl<'s> Bump for IdentRef<'s> {
     fn bump_over_name(&self, name: &str) -> IdentRef<'s> {
         if self.name == name {
@@ -51,4 +62,5 @@ impl<'s> Bump for Ast<IdentRef<'s>> {
         }
     }
 }
+*/
 

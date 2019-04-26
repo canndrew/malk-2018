@@ -1,6 +1,6 @@
 use super::*;
 use crate::parser::Ast;
-use crate::core::{Pat, Term, Ident};
+use crate::core::{Term, Ident};
 
 const MAX_LINE_WIDTH: usize = 80;
 
@@ -108,21 +108,26 @@ impl Term {
             Term::UnitType => list_nil!("#{", "}"),
             Term::EnumType { name, head, tail } => list_cons!(Term, EnumType, NeverType, name, head, tail, "@{", "}"),
             Term::NeverType => list_nil!("@{", "}"),
-            Term::Case { name, head, tail } => list_cons!(Term, Case, Nothing, name, head, tail, "[", "]"),
-            Term::Nothing => list_nil!("[", "]"),
-            Term::CaseType { name, head, tail } => list_cons!(Term, CaseType, NothingType, name, head, tail, "#[", "]"),
-            Term::NothingType => list_nil!("#[", "]"),
+            Term::Case { name, head, tail } => list_cons!(Term, Case, Nil, name, head, tail, "[", "]"),
+            Term::Nil => list_nil!("[", "]"),
+            Term::CaseType { name, head, tail } => list_cons!(Term, CaseType, NilType, name, head, tail, "#[", "]"),
+            Term::NilType => list_nil!("#[", "]"),
             Term::Var(ident) => ident.prerender(),
             Term::Type { bumps } => {
                 let mut s = prerender_bumps(*bumps);
                 s.push_str("Type");
                 Chunk::String(s)
             },
+            Term::MetaVar(i) => {
+                Chunk::String(format!("?"))
+            },
+            /*
             Term::Level { bumps } => {
                 let mut s = prerender_bumps(*bumps);
                 s.push_str("Level");
                 Chunk::String(s)
             },
+            */
             Term::InjLeft { ident, left } => at_left!(ident, left),
             Term::InjRight { right } => at_right!(right),
             Term::Func { pat, body } => {
@@ -193,12 +198,13 @@ impl Term {
             Term::NeverType |
             Term::Case { .. } |
             Term::CaseType { .. } |
-            Term::Nothing |
-            Term::NothingType => Precedence::Brackets,
+            Term::Nil |
+            Term::NilType => Precedence::Brackets,
 
+            Term::MetaVar(..) |
             Term::Var(..) |
             Term::Type { .. } |
-            Term::Level { .. } |
+            //Term::Level { .. } |
             Term::String(..) => Precedence::Enclosed,
 
             Term::Typed { .. } |
@@ -226,6 +232,7 @@ impl Term {
     }
 }
 
+/*
 impl Pat {
     fn prerender(&self, container_precedence: Precedence) -> Chunk {
         let chunk = match self {
@@ -261,6 +268,7 @@ impl Pat {
         }
     }
 }
+*/
 
 impl Ident {
     fn prerender(&self) -> Chunk {
