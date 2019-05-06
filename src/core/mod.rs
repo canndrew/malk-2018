@@ -1,13 +1,10 @@
-use super::*;
+pub use super::*;
 
-mod term;
-mod ident;
 mod ctx;
-//mod bump;
-//mod pat;
+mod ty;
+mod term;
 
-pub use term::*;
-pub use ident::*;
-//pub use bump::*;
-//pub use pat::*;
+pub use ctx::Ctx;
+pub use ty::{Type, TypeKind};
+pub use term::{Term, TermKind};
 

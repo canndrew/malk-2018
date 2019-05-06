@@ -37,11 +37,14 @@ use std::char;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
+use std::rc::Rc;
+use std::cmp;
 use lsp_types::Url;
 
 use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
 use self::lsp_types_ext::*;
+use self::core::{Ctx, Type, TypeKind, Term, TermKind};
 
 /*
 macro_rules! future_bail {
@@ -61,6 +64,8 @@ mod lsp_types_ext;
 //mod compile;
 //mod render;
 //pub mod core;
+pub mod core;
+pub mod typechecker;
 pub mod syntax;
 pub mod parser;
 //mod wasm;
@@ -106,6 +111,8 @@ fn run(filename: &str) -> Result<(), Error> {
     };
     let uri = Arc::new(Url::parse(&format!("file://{}", filename))?);
     let term = unwrap!(parser::parse_doc(&uri, &code));
+    let ht = typechecker::check_doc(&term);
+    println!("ht == {:?}", ht);
     //let rendered = term.render("", "");
     //println!("rendered: {}", rendered);
     Ok(())

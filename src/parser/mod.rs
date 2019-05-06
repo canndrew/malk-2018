@@ -51,6 +51,15 @@ impl<T> From<(Ast<T>, Origin)> for Ast<T> {
     }
 }
 
+impl<T> PartialEq<Ast<T>> for Ast<T>
+where
+    T: PartialEq<T>,
+{
+    fn eq(&self, other: &Ast<T>) -> bool {
+        self.node.eq(&other.node)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Parser<'s> {
     s: &'s str,

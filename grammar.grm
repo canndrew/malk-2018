@@ -57,16 +57,16 @@ bracketed_term: Expr = [
 
 
 
-parens_term: Expr = "(" (enclosed: any_term) ")" => enclosed;
+parens_term: Expr = "{" (enclosed: any_term) "}" => enclosed;
 typed_term: Expr = (term: enclosed_term) ":" (ty: enclosed_term) => Expr::Typed { term, ty };
 
-unit_term: Expr = "{" "}" => Expr::Unit;
-unit_type: Expr = "#{" "}" => Expr::UnitType;
+unit_term: Expr = "(" ")" => Expr::Unit;
+unit_type: Expr = "#(" ")" => Expr::UnitType;
 
 pair_term: Expr = [
-    "{" (ident: ident) "=" (head: non_statement_term) (tail: pair_term_tail) "}"
+    "(" (ident: ident) "=" (head: non_statement_term) (tail: pair_term_tail) ")"
         => Expr::Pair { field: Some(ident), head, tail },
-    "{" (head: non_statement_term) (tail: pair_term_tail) "}"
+    "(" (head: non_statement_term) (tail: pair_term_tail) ")"
         => Expr::Pair { field: None, head, tail },
 ];
 
@@ -81,9 +81,9 @@ pair_term_tail: Expr = [
 ];
 
 pair_type: Expr = [
-    "#{" (ident: ident) ":" (head: non_statement_term) (tail: pair_type_tail) "}"
+    "#(" (ident: ident) ":" (head: non_statement_term) (tail: pair_type_tail) ")"
         => Expr::PairType { field: Some(ident), head, tail },
-    "#{" (head: non_statement_term) (tail: pair_type_tail) "}"
+    "#(" (head: non_statement_term) (tail: pair_type_tail) ")"
         => Expr::PairType { field: None, head, tail },
 ];
 
@@ -130,7 +130,7 @@ name: Name = [
         let i = i.into_inner();
         Name { ident: i.ident, bumps: i.bumps + 1 }
     },
-    (ident: ident) => Name { ident: ident, bumps: 0 },
+    (ident: ident) => Name { ident: ident.into_inner(), bumps: 0 },
 ];
 
 variable: Expr = (i: name) => Expr::Var(i.into_inner());
