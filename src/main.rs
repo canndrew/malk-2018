@@ -24,6 +24,7 @@ use clap::{Arg, App, AppSettings, SubCommand};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use unicode_width::UnicodeWidthStr;
 
+use std::hash::Hasher;
 use std::sync::{atomic, Mutex};
 use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
@@ -33,6 +34,7 @@ use std::fmt::Display;
 use std::io::{Read, Write, BufReader};
 use std::str::FromStr;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::char;
 use std::marker::PhantomData;
 use std::path::Path;

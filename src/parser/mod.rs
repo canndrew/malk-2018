@@ -80,7 +80,7 @@ impl<T> Ast<T> {
         self.node
     }
 
-    fn into_inner(self) -> T {
+    pub fn into_inner(self) -> T {
         *self.node
     }
 }

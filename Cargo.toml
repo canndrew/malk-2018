@@ -29,4 +29,6 @@ grammar-macro = { path = "grammar-macro" }
 regex = "*"
 unicode-segmentation = "*"
 backtrace = "*"
+pretty_assertions = "*"
+
 
