@@ -1,4 +1,5 @@
 #![feature(pattern)]
+#![feature(map_get_key_value)]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
 #![feature(nll)]
@@ -24,7 +25,7 @@ use clap::{Arg, App, AppSettings, SubCommand};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use unicode_width::UnicodeWidthStr;
 
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{atomic, Mutex};
 use std::sync::atomic::AtomicU64;
 use std::convert::TryFrom;
@@ -70,6 +71,7 @@ pub mod core;
 pub mod typechecker;
 pub mod syntax;
 pub mod parser;
+pub mod interner;
 //mod wasm;
 
 fn main() -> Result<(), Error> {

@@ -19,6 +19,12 @@ struct TypeInner {
     hash: u64,
 }
 
+impl Hash for TypeInner {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.hash.hash(hasher)
+    }
+}
+
 #[derive(Debug)]
 pub enum TypeKind {
     Embed(Term),

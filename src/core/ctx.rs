@@ -24,6 +24,12 @@ struct CtxInner {
     hash: u64,
 }
 
+impl Hash for CtxInner {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.hash.hash(hasher)
+    }
+}
+
 #[derive(PartialEq, Debug)]
 enum CtxKind {
     Nil,
