@@ -74,16 +74,7 @@ impl PartialEq for Type {
                 arg0 == arg1 &&
                 res0 == res1
             },
-            _ => {
-                match (self.reduce_head(), other.reduce_head()) {
-                    (None, None) => false,
-                    (self_reduced, other_reduced) => {
-                        let self_reduced = self_reduced.unwrap_or(self.clone());
-                        let other_reduced = other_reduced.unwrap_or(other.clone());
-                        self_reduced == other_reduced
-                    },
-                }
-            },
+            _ => false,
         }
     }
 }
@@ -207,6 +198,7 @@ impl Type {
         }
     }
 
+    /*
     pub fn reduce_head(&self) -> Option<Type> {
         let ctx = self.get_ctx();
         if let TypeKind::Embed(term) = self.kind() {
@@ -235,6 +227,7 @@ impl Type {
         }
         None
     }
+    */
 
     pub fn try_lift_out_of_ctx(&self, cutoff: u32, lift_bumps: u32) -> Option<Type> {
         let ctx = self.get_ctx().try_lift(cutoff, lift_bumps)?;
@@ -277,12 +270,34 @@ impl Type {
             TypeKind::Type { .. } => (),
             _ => panic!("embedding a term which is not a type"),
         }
-        Type {
-            inner: Rc::new(TypeInner {
-                kind: TypeKind::Embed(term.clone()),
-                ctx: ctx.clone(),
-                hash,
-            }),
+        match term.kind() {
+            TermKind::Type { level } => {
+                Type::ty(&ctx, *level)
+            },
+            TermKind::EqualType { x0, x1 } => {
+                Type::equal(&ctx, x0, x1)
+            },
+            TermKind::UnitType => {
+                Type::unit(&ctx)
+            },
+            TermKind::NeverType => {
+                Type::never(&ctx)
+            },
+            TermKind::PairType { head_ident_opt, head_type, tail_type } => {
+                Type::pair(&ctx, head_ident_opt, head_type, tail_type)
+            },
+            TermKind::FuncType { arg_type, res_type } => {
+                Type::func(&ctx, arg_type, res_type)
+            },
+            _ => {
+                Type {
+                    inner: Rc::new(TypeInner {
+                        kind: TypeKind::Embed(term.clone()),
+                        ctx: ctx.clone(),
+                        hash,
+                    }),
+                }
+            },
         }
     }
 

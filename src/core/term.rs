@@ -149,16 +149,7 @@ impl PartialEq for Term {
                 func0 == func1 &&
                 arg0 == arg1
             },
-            _ => {
-                match (self.reduce_head(), other.reduce_head()) {
-                    (None, None) => false,
-                    (self_reduced, other_reduced) => {
-                        let self_reduced = self_reduced.unwrap_or(self.clone());
-                        let other_reduced = other_reduced.unwrap_or(self.clone());
-                        self_reduced == other_reduced
-                    },
-                }
-            },
+            _ => false,
         }
     }
 }
@@ -334,6 +325,7 @@ impl Term {
         }
     }
 
+    /*
     pub fn reduce_head(&self) -> Option<Term> {
         match self.kind() {
             TermKind::J { target, elim, .. } => {
@@ -365,6 +357,7 @@ impl Term {
         }
         None
     }
+    */
 
     pub fn try_lift_out_of_ctx(&self, cutoff: u32, lift_bumps: u32) -> Option<Term> {
         let ctx = self.get_ctx().try_lift(cutoff, lift_bumps)?;
@@ -665,15 +658,20 @@ impl Term {
             .substitute(1, &target_type_x1_ident_opt, &a1)
             .substitute(0, &target_type_equality_ident_opt, elim)
         };
-        let target_type = target_type.clone();
-        let target = target.clone();
-        let elim = elim.clone();
-        Term {
-            inner: Rc::new(TermInner {
-                kind: TermKind::J { target_type, target, elim },
-                ty: final_ty,
-                hash,
-            }),
+
+        if let TermKind::Refl { x } = elim.kind() {
+            target.substitute(0, &IdentOpt::fake("refl_x"), x)
+        } else {
+            let target_type = target_type.clone();
+            let target = target.clone();
+            let elim = elim.clone();
+            Term {
+                inner: Rc::new(TermInner {
+                    kind: TermKind::J { target_type, target, elim },
+                    ty: final_ty,
+                    hash,
+                }),
+            }
         }
     }
 
@@ -782,15 +780,21 @@ impl Term {
             },
         };
 
-        let target_type = target_type.clone();
-        let target = target.clone();
-        let elim = elim.clone();
-        Term {
-            inner: Rc::new(TermInner {
-                kind: TermKind::PairSplit { target_type, target, elim },
-                ty: final_type,
-                hash,
-            })
+        if let TermKind::Pair { head_ident_opt, head, tail } = elim.kind() {
+            target
+            .substitute(1, head_ident_opt, head)
+            .substitute(0, &IdentOpt::fake("tail"), tail)
+        } else {
+            let target_type = target_type.clone();
+            let target = target.clone();
+            let elim = elim.clone();
+            Term {
+                inner: Rc::new(TermInner {
+                    kind: TermKind::PairSplit { target_type, target, elim },
+                    ty: final_type,
+                    hash,
+                })
+            }
         }
     }
 
@@ -836,14 +840,18 @@ impl Term {
         assert_eq!(arg_type, arg.get_type());
         let final_type = res_type.substitute(0, &IdentOpt::fake("arg"), arg);
 
-        let func = func.clone();
-        let arg = arg.clone();
-        Term {
-            inner: Rc::new(TermInner {
-                kind: TermKind::App { func, arg },
-                ty: final_type,
-                hash,
-            }),
+        if let TermKind::Func { res, .. } = func.kind() {
+            res.substitute(0, &IdentOpt::fake("arg"), arg)
+        } else {
+            let func = func.clone();
+            let arg = arg.clone();
+            Term {
+                inner: Rc::new(TermInner {
+                    kind: TermKind::App { func, arg },
+                    ty: final_type,
+                    hash,
+                }),
+            }
         }
     }
 }

@@ -48,6 +48,7 @@ use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
 use self::lsp_types_ext::*;
 use self::core::{Ctx, Type, TypeKind, Term, TermKind};
+use self::interner::Interner;
 
 /*
 macro_rules! future_bail {
