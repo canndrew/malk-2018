@@ -2,104 +2,305 @@ use super::*;
 
 use crate::syntax::{IdentOpt, NameOpt};
 
-// Tries to turn the type into a simpler type. Produces a term which can be substituted into a term
-// predicated on the original type to turn it into a term predicated on the new type.
+// Tries to turn the type into a simpler type. Produces two terms which map between the old and the
+// new type in both directions. The forward term is term of the old type, predicated on the new
+// type, the back term is a term of the new type predicated on the old type. Together they form an
+// isomorphism.
 //
-// eg.
-//  #(#(), t: T) simplifies to (t: T) with substitution term ((), t)
-pub fn simplify(ctx: &Ctx, ty: &Type) -> (Type, Term) {
+// eg. for
+//
+//      G |- #(#(), t: T)
+// 
+// we simplify this type to
+//
+//      G |- T
+// 
+// and we get two morphisms:
+//
+//      G, t: T |- ((), t)         -- forward
+//      G, p: #(#(), t: T) |- p.t  -- back
+//
+pub fn simplify(ctx: &Ctx, ty: &Type) -> (Type, Term, Term) {
     assert_eq!(*ctx, ty.get_ctx());
-    /*
     match ty.kind() {
-        TypeKind::Embed(..) |
-        TypeKind::Type { .. } |
-        TypeKind::Never |
-        TypeKind::Unit => {
-        */
-            let ret_ty = ty.clone();
-            let ret_ctx = ctx.bind(&IdentOpt::fake("meta_arg"), &ret_ty);
-            let subst = Term::var(&ret_ctx, 0, &NameOpt::fake("meta_arg"));
-            (ret_ty, subst)
-        /*
-        },
         TypeKind::Equal { x0, x1 } => {
             if x0 == x1 {
                 let ret_ty = Type::unit(ctx);
-                let ret_ctx = ctx.bind(&IdentOpt::none(), &ret_ty);
-                let subst = Term::refl(&ret_ctx, &x0);
-                (ret_ty, subst)
-            } else {
-                let ret_ty = ty.clone();
-                let ret_ctx = ctx.bind(&IdentOpt::none(), &ret_ty);
-                let subst = Term::var(&ret_ctx, 0, &NameOpt::none());
-                (ret_ty, subst)
+                let ctx_forward = ctx.bind(&IdentOpt::fake("eliminating_equality"), &ret_ty);
+                let ctx_back = ctx.bind(&IdentOpt::fake("equality"), &ty);
+
+                let subst_forward = Term::refl(&ctx_forward, x0);
+                let subst_back = Term::unit(&ctx_back);
+
+                return (ret_ty, subst_forward, subst_back);
             }
         },
-        TypeKind::Pair { head_ident_opt, head, tail } => {
-            let (simplified_head, head_subst) = simplify(ctx, head);
+        TypeKind::Pair { head_ident_opt, head, tail } => return {
+            // initial state
+            //
+            // G |- A type
+            // G, a: A |- B type
+            // G |- #(A, B) type
+            //
+            // simplifying A gives us..
+            //
+            // G |- A' type
+            // G, a': A' |- a_for: A[^0 A']
+            // G, a: A |- a_bak: A'[^0 A]
+            let (simplified_head, head_subst_forward, head_subst_back) = simplify(ctx, head);
 
             if let TypeKind::Unit = simplified_head.kind() {
-                let substituted_tail = {
+                // G |- BBumped type
+                let tail_bumped = {
+                    // G, a: A |- B type
                     tail
+                    // G, #(), a: A |- B[^1 #()] type
+                    .bump_ctx(1, head_ident_opt, &Type::unit(ctx))
+                    // G, #() |- B[^1 #()][a / a_for] type
+                    .substitute(0, head_ident_opt, &head_subst_forward)
+                    // G |- B[^1 #()][a / a_for][() / ()] type
                     .substitute(0, head_ident_opt, &Term::unit(ctx))
                 };
 
-                let (simplified_tail, tail_subst) = simplify(ctx, substituted_tail);
+                let (simplified_tail, tail_subst_forward, tail_subst_back) = simplify(ctx, &tail_bumped);
 
-                unimplemented!()
+                let ret_ty = simplified_tail;
+
+                let ctx_forward = ctx.bind(&IdentOpt::fake("simplified_pair"), &ret_ty);
+                let ctx_back = ctx.bind(&IdentOpt::fake("pair"), ty);
+
+                let tail_type_bumped = {
+                    tail
+                    .bump_ctx(1, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                };
+                let tail_subst_forward_bumped = {
+                    tail_subst_forward
+                    .bump_ctx(1, head_ident_opt, head)
+                };
+                let pair_subst_forward = Term::pair(
+                    &ctx_forward,
+                    head_ident_opt,
+                    &Term::unit(&ctx_forward),
+                    &tail_type_bumped,
+                    &tail_subst_forward_bumped,
+                );
+                let tail_subst_back_bumped = {
+                    tail_subst_back
+                    .bump_ctx(1, head_ident_opt, head)
+                    .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                };
+                let ret_ty_bumped = ret_ty.bump_ctx(0, &IdentOpt::fake("pair"), ty);
+                let pair_subst_back = Term::pair_split(
+                    &ctx_back,
+                    &ret_ty_bumped,
+                    &tail_subst_back_bumped,
+                    &Term::var(&ctx_back, 0, &NameOpt::fake("pair")),
+                );
+
+                (ret_ty, pair_subst_forward, pair_subst_back)
             } else {
-                if let TypeKind::Pair {
-                    head_ident_opt: head_head_ident_opt,
-                    head: head_head,
-                    tail: head_tail,
-                } = simplified_head.kind() {
-                } else {
-                    let new_tail = {
-                        tail
-                        .bump_ctx(1, head_ident_opt, &new_head)
-                        .substitute(0, head_ident_opt, &subst_head)
+                // G, a': A' |- BBumped type
+                let tail_bumped = {
+                    // G, a: A |- B type
+                    tail
+                    // G, a': A', a: A[^0 A'] |- B[^1 A'] type
+                    .bump_ctx(1, head_ident_opt, &simplified_head)
+                    // G, a': A' |- B[^1 A'][a / a_for] type
+                    .substitute(0, head_ident_opt, &head_subst_forward)
+                };
+
+                let tail_ctx = ctx.bind(head_ident_opt, &simplified_head);
+
+                // simplify BBumped to get
+                //
+                // G, a': A' |- B' type
+                // G, a': A', b': B' |- b_for: BBumped[^0 B']
+                // G, a': A', b: BBumped |- b_bak: B'[^0 BBumped]
+                let (simplified_tail, tail_subst_forward, tail_subst_back) = simplify(&tail_ctx, &tail_bumped);
+
+                if let TypeKind::Unit = simplified_tail.kind() {
+                    let ret_ty = simplified_head;
+                    let ctx_forward = {
+                        ctx
+                        .bind(&IdentOpt::fake("simplified_pair"), &ret_ty)
                     };
-                    let new_ret_ty = Type::pair(ctx, head_ident_opt, &new_head, &new_tail);
-                    let ret_ctx = ctx.bind(&IdentOpt::none(), &new_ret_ty);
-                    let bumped_head = head.bump_ctx(0, &IdentOpt::none(), &new_ret_ty);
-                    let bumped_tail = tail.bump_ctx(1, &IdentOpt::none(), &new_ret_ty);
-                    let pair_ctx = {
-                        ret_ctx
-                        .bind(head_ident_opt, &bumped_head)
-                        .bind(&IdentOpt::none(), &bumped_tail)
-                    };
-                    let bumped_ret_ty = {
-                        ret_ty
-                        .bump_ctx(0, &IdentOpt::none(), &new_ret_ty)
-                        .bump_ctx(0, head_ident_opt, &bumped_head)
-                        .bump_ctx(0, &IdentOpt::none(), &bumped_tail)
-                    };
-                    let bumped_subst_head = {
-                        subst_head
-                        .bump_ctx(0, &IdentOpt::none(), &new_ret_ty)
-                        .bump_ctx(0, head_ident_opt, &bumped_head)
-                        .bump_ctx(0, &IdentOpt::none(), &bumped_tail)
+                    let ctx_back = {
+                        ctx
+                        .bind(&IdentOpt::fake("pair"), ty)
                     };
 
-                    let new_subst = Term::pair_split(
-                        &ret_ctx,
-                        &bumped_ret_ty,
-                        &Term::pair(
-                            &pair_ctx,
-                            head_ident_opt,
-                            &bumped_subst_head,
-                            &Term::var(&pair_ctx, 0, &NameOpt::none()),
-                        ),
-                        &subst,
+                    let tail_type_bumped = {
+                        tail
+                        .bump_ctx(1, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+                    let tail_subst_forward_bumped = {
+                        tail_subst_forward
+                        .substitute(0, &IdentOpt::fake("simplified_tail"), &Term::unit(&ctx_forward))
+                    };
+
+                    let pair_subst_forward = Term::pair(
+                        &ctx_forward,
+                        head_ident_opt,
+                        &head_subst_forward,
+                        &tail_type_bumped,
+                        &tail_subst_forward_bumped,
                     );
+
+                    let head_subst_back_bumped = {
+                        head_subst_back
+                        .bump_ctx(0, &IdentOpt::fake("tail"), tail)
+                        .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    let ret_ty_bumped = {
+                        ret_ty
+                        .bump_ctx(0, head_ident_opt, head)
+                        .bump_ctx(0, &IdentOpt::fake("tail"), tail)
+                        .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    let pair_subst_back = Term::pair_split(
+                        &ctx_back,
+                        &ret_ty_bumped,
+                        &head_subst_back_bumped,
+                        &Term::var(&ctx_back, 0, &NameOpt::fake("pair")),
+                    );
+
+                    (ret_ty, pair_subst_forward, pair_subst_back)
+                } else {
+                    // G |- #(A', B') type
+                    let ret_ty = Type::pair(ctx, head_ident_opt, &simplified_head, &simplified_tail);
+
+                    // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 #(A', B')] |- a_for_bumped : A[^0 A'][^0 B'][^2 #(A', B')]
+                    let head_subst_forward_bumped = {
+                        // G, a': A' |- a_for: A[^0 A']
+                        head_subst_forward
+                        // G, a': A', b': B' |- a_for[^0 B']: A[^0 A'][^0 B']
+                        .bump_ctx(0, &IdentOpt::fake("simplified_tail"), &simplified_tail)
+                        // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 #(A', B')] |- a_for[^0 B'][^2 #(A', B')]: A[^0 A'][^0 B'][^2 #(A', B')]
+                        .bump_ctx(2, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    // G, a': A' b': B'[^1 A][a' / a_bak][^1 A'][a / a_for] |- b_for_bumped: B[^0 B'][^2 A'][a / a_for]
+                    let tail_subst_forward_bumped = {
+                        // G, a': A', b': B' |- b_for: BBumped[^0 B']
+                        tail_subst_forward
+                        // G, a: A, a': A'[^0 A], b': B'[^1 A] |- b_for[^2 A]: BBumped[^0 B'][^2 A]
+                        .bump_ctx(2, head_ident_opt, head)
+                        // G, a: A, b': B'[^1 A][a' / a_bak] |- b_for[^2 A][a' / a_bak]: BBumped[^0 B'][^2 A]
+                        // G, a: A, b': B'[^1 A][a' / a_bak] |- b_for[^2 A][a' / a_bak]: B[^0 B']
+                        .substitute(1, head_ident_opt, &head_subst_back)
+                        // G, a': A', a: A[^0 A'], b': B'[^1 A][a' / a_bak][^1 A'] |- b_for[^2 A][a' / a_bak][^2 A']: B[^0 B'][^2 A']
+                        .bump_ctx(2, head_ident_opt, &simplified_head)
+                        // G, a': A', b': B'[^1 A][a' / a_bak][^1 A'][a / a_for] |- b_for[^2 A][a' / a_bak][^2 A'][a / a_for]: B[^0 B'][^2 A'][a / a_for]
+                        .substitute(1, head_ident_opt, &head_subst_forward)
+                        // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 A][a' / a_bak][^1 A'][a / a_for][^1 #(A', B')]
+                        //      |- b_for[^2 A][a' / a_bak][^2 A'][a / a_for][^2 #(A', B')]: B[^0 B'][^2 A'][a / a_for][^2 #(A', B')]
+                        .bump_ctx(2, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    let ctx_forward = {
+                        ctx
+                        .bind(&IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    let ctx_back = {
+                        ctx
+                        .bind(&IdentOpt::fake("pair"), ty)
+                    };
+
+                    // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 #(A', B')]
+                    let pair_forward_ctx = {
+                        ctx
+                        .bind(head_ident_opt, &simplified_head)
+                        .bind(&IdentOpt::fake("simplified_tail"), &simplified_tail)
+                        .bump(2, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 #(A', B')] |- #(A, B)[^0 A'][^0 B'][^2 #(A', B')] type
+                    let ty_bumped = {
+                        ty
+                        .bump_ctx(0, head_ident_opt, &simplified_head)
+                        .bump_ctx(0, &IdentOpt::fake("simplified_tail"), &simplified_tail)
+                        .bump_ctx(2, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    let tail_type_bumped = {
+                        tail
+                        .bump_ctx(1, head_ident_opt, &simplified_head)
+                        .bump_ctx(1, &IdentOpt::fake("simplified_tail"), &simplified_tail)
+                        .bump_ctx(3, &IdentOpt::fake("simplified_pair"), &ret_ty)
+                    };
+
+                    // G, p': #(A', B') |- p_for: #(A, B)[^0 #(A', B')]
+                    let pair_subst_forward = {
+                        // G, p': #(A', B'), a': A'[^0 #(A', B')], b': B'[^1 #(A', B')] |- (a_for_bumped, b_for_bumped): #(A, B)[^0 A'][^0 B'][^2 #(A', B')]
+                        let pair = &Term::pair(&pair_forward_ctx, head_ident_opt, &head_subst_forward_bumped, &tail_type_bumped, &tail_subst_forward_bumped);
+                        // G, p': #(A', B') |- split(p' => (a_for_bumped, b_for_bumped)): #(A, B)[^0 #(A', B')]
+                        Term::pair_split(&ctx_forward, &ty_bumped, &pair, &Term::var(&ctx_forward, 0, &NameOpt::fake("simplified_pair")))
+                    };
+
+                    // G, p: #(A, B), a: A, b: B |- a_bak_bumped: A'[^0 A][^0 B][^2 #(A, B)]
+                    let head_subst_back_bumped = {
+                        // G, a: A |- a_bak: A'[^0 A]
+                        head_subst_back
+                        // G, a: A, b: B |- a_bak[^0 B]: A'[^0 A][^0 B]
+                        .bump_ctx(0, &IdentOpt::fake("tail"), tail)
+                        // G, p: #(A, B), a: A[^0 #(A, B)], b: B[^1 #(A, B)] |- a_bak[^0 B][^2 #(A, B)]: A'[^0 A][^0 B][^2 #(A, B)]
+                        .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    // G, p: #(A, B), a: A, b: B |- b_bak_bumped: B'[^1 A][^1 B][^2 #(A, B)][a' / a_bak]
+                    let tail_subst_back_bumped = {
+                        // G, a': A', b: B[^1 A'][a / a_for] |- b_bak: B'[^0 B[^1 A'][a / a_for]]
+                        tail_subst_back
+                        // G, a: A, a': A'[^0 A], b: B[^1 A'][a / a_for][^1 A] |- b_bak[^2 A]: B'[^0 B[^1 A'][a / a_for]][^2 A]
+                        .bump_ctx(2, head_ident_opt, head)
+                        // G, a: A, b: B |- b_bak[^2 A][a' / a_bak] : B'[^0 B[^1 A'][a / a_for]][^2 A][a' / a_bak]
+                        .substitute(1, head_ident_opt, &head_subst_back)
+                        // G, p: #(A, B), a: A, b: B |- b_bak[^2 A][a' / a_bak][^2 #(A, B)] : B'[^0 B[^1 A'][a / a_for]][^2 A][a' / a_bak][^2 #(A, B)]
+                        .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    // G, p: #(A, B), a: A[^0 #(A, B)], b: B[^1 #(A, B)]
+                    let pair_back_ctx = {
+                        ctx
+                        .bind(head_ident_opt, head)
+                        .bind(&IdentOpt::fake("tail"), tail)
+                        .bump(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    let ret_ty_bumped = {
+                        ret_ty
+                        .bump_ctx(0, head_ident_opt, head)
+                        .bump_ctx(0, &IdentOpt::fake("tail"), tail)
+                        .bump_ctx(2, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    let ret_tail_type_bumped = {
+                        simplified_tail
+                        .bump_ctx(1, head_ident_opt, head)
+                        .bump_ctx(1, &IdentOpt::fake("tail"), tail)
+                        .bump_ctx(3, &IdentOpt::fake("pair"), ty)
+                    };
+
+                    let pair_subst_back = {
+                        // G, p: #(A, B), a: A, b: B |- (a_bak_bumped, b_bak_bumped): #(A', B')[^0 A][^0 B][^2 #(A, B)]
+                        let pair = &Term::pair(&pair_back_ctx, head_ident_opt, &head_subst_back_bumped, &ret_tail_type_bumped, &tail_subst_back_bumped);
+                        // G, p: #(A, B) |- split(p => (a_bak_bumped, b_bak_bumped)): #(A', B')[^0 #(A, B)]
+                        Term::pair_split(&ctx_back, &ret_ty_bumped, &pair, &Term::var(&ctx_back, 0, &NameOpt::fake("pair")))
+                    };
+
+                    (ret_ty, pair_subst_forward, pair_subst_back)
                 }
-            };
+            }
         },
+        /*
         TypeKind::Func { arg, res } => {
-            let (simplified_arg, arg_subst) = simplify(ctx, arg);
+            let (simplified_arg, arg_subst_forward, arg_subst_back) = simplify(ctx, arg);
             match simplified_arg.kind() {
                 TypeKind::Unit => {
-                    // return simplified res
+                    // return res
                 },
                 TypeKind::Never => {
                     // return unit
@@ -109,9 +310,20 @@ pub fn simplify(ctx: &Ctx, ty: &Type) -> (Type, Term) {
                     // if so, conglomerate the args into a struct.
                 },
             }
+            unimplemented!()
         },
+        */
+        _ => (),
     }
-    */
+
+    let ret_ty = ty.clone();
+    let ctx_forward = ctx.bind(&IdentOpt::fake("new_meta"), &ret_ty);
+    let ctx_back = ctx.bind(&IdentOpt::fake("old_meta"), &ret_ty);
+
+    let subst_forward = Term::var(&ctx_forward, 0, &NameOpt::fake("new_meta"));
+    let subst_back = Term::var(&ctx_back, 0, &NameOpt::fake("old_meta"));
+
+    (ret_ty, subst_forward, subst_back)
 }
 
 /*

@@ -1,7 +1,8 @@
+use super::*;
 use crate::parser::Ast;
 use crate::syntax::{Ident, IdentOpt};
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Name {
     pub ident: Ident,
     pub bumps: u32,
@@ -70,7 +71,7 @@ impl Name {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Eq, Clone, Debug)]
 pub enum NameOpt {
     Real(Name),
     Fake(&'static str),
@@ -148,6 +149,15 @@ impl NameOpt {
 impl From<Name> for NameOpt {
     fn from(name: Name) -> NameOpt {
         NameOpt::Real(name)
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for _ in 0..self.bumps {
+            write!(f, "^")?;
+        }
+        write!(f, "{}", self.ident)
     }
 }
 

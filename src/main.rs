@@ -6,6 +6,7 @@
 #![feature(label_break_value)]
 #![feature(integer_atomics)]
 #![feature(proc_macro_hygiene)]
+#![feature(try_blocks)]
 
 #![allow(unused_imports)] // workaround spurious warnings
 
@@ -34,7 +35,7 @@ use std::{fmt, io, slice, fs, str, mem};
 use std::fmt::Display;
 use std::io::{Read, Write, BufReader};
 use std::str::FromStr;
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 use std::collections::hash_map::DefaultHasher;
 use std::char;
 use std::marker::PhantomData;
@@ -101,7 +102,13 @@ fn main() -> Result<(), Error> {
         "run" => {
             let run_matches = unwrap!(matches.subcommand_matches("run"));
             let filename = unwrap!(run_matches.value_of("file"));
-            unwrap!(run(filename));
+            match run(filename) {
+                Ok(_) => (),
+                Err(e) => {
+                    println!("error!");
+                    println!("{}", e);
+                },
+            }
 
             Ok(())
         },
@@ -116,8 +123,15 @@ fn run(filename: &str) -> Result<(), Error> {
     };
     let uri = Arc::new(Url::parse(&format!("file://{}", filename))?);
     let term = unwrap!(parser::parse_doc(&uri, &code));
-    let ht = typechecker::check_doc(&term);
-    println!("ht == {:?}", ht);
+    let res = typechecker::check_doc(&term);
+    let term = match res {
+        Ok(term) => term,
+        Err(e) => {
+            println!("got error: {}", e);
+            return Err(e);
+        },
+    };
+    println!("got term: {:#?}", term);
     //let rendered = term.render("", "");
     //println!("rendered: {}", rendered);
     Ok(())

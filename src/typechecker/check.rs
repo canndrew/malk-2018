@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::core::render;
 use crate::syntax::{Expr, NameOpt, IdentOpt};
 
 pub fn check_doc(expr: &Expr) -> Result<Term, Error> {
@@ -11,7 +12,17 @@ pub fn check_doc(expr: &Expr) -> Result<Term, Error> {
     if let TypeKind::Unit = ht.meta_arg_type().kind() {
         return Ok(ht.term().substitute(0, &IdentOpt::fake("meta_arg"), &Term::unit(&ctx)));
     }
-    bail!("unable to solve requirement {:#?}", ht.meta_arg_type());
+
+    struct Error { ht: HasType };
+
+    impl fmt::Display for Error {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "unable to solve requirement: ")?;
+            render::render_type(&self.ht.meta_arg_type(), f, 0, render::Precedence::Enclosed)
+        }
+    }
+
+    bail!("{}", Error { ht })
 }
 
 // Finding a unique inhabitant of meta_arg_type, and substituting it into term produces a term of
@@ -60,7 +71,7 @@ impl HasType {
     }
 
     pub fn new(ctx: &Ctx, meta_arg_type: &Type, term: &Term) -> HasType {
-        let (meta_arg_type, subst) = simplify(ctx, meta_arg_type);
+        let (meta_arg_type, subst, _) = simplify(ctx, meta_arg_type);
         let term = {
             term
             .bump_ctx(1, &IdentOpt::fake("meta_arg"), &meta_arg_type)
@@ -148,17 +159,18 @@ pub fn has_type(ctx: &Ctx, ty: &Type, expr: &Expr) -> Result<HasType, Error> {
             let tail_ht = has_type(&tail_ctx, &Type::from_term(Term::app(&tail_ctx, &Term::var(&tail_ctx, 1, &NameOpt::fake("Tail")), &head_ht.term())), tail)?;
 
             let pair_ctx = tail_ctx.bind(&IdentOpt::fake("meta_arg"), &tail_ht.meta_arg_type());
+            let pair_tail_type_ctx = pair_ctx.bind(&ident_opt, &Type::from_term(Term::var(&pair_ctx, 3, &NameOpt::fake("Head"))));
+            let pair_tail_type = Type::from_term(Term::app(
+                &pair_tail_type_ctx,
+                &Term::var(&pair_tail_type_ctx, 3, &NameOpt::fake("Tail")),
+                &Term::var(&pair_tail_type_ctx, 0, &NameOpt::new(&ident_opt, 0)),
+            ));
             let pair_type = {
-                let pair_tail_type_ctx = pair_ctx.bind(&ident_opt, &Type::from_term(Term::var(&pair_ctx, 3, &NameOpt::fake("Head"))));
                 Type::pair(
                     &pair_ctx,
                     &ident_opt,
                     &Type::from_term(Term::var(&pair_ctx, 3, &NameOpt::fake("Head"))),
-                    &Type::from_term(Term::app(
-                        &pair_tail_type_ctx,
-                        &Term::var(&pair_tail_type_ctx, 3, &NameOpt::fake("Tail")),
-                        &Term::var(&pair_tail_type_ctx, 0, &NameOpt::new(&ident_opt, 0)),
-                    )),
+                    &pair_tail_type,
                 )
             };
             let pair_term = {
@@ -166,6 +178,7 @@ pub fn has_type(ctx: &Ctx, ty: &Type, expr: &Expr) -> Result<HasType, Error> {
                     &pair_ctx,
                     &ident_opt,
                     &head_ht.term().bump_ctx(0, &IdentOpt::fake("meta_arg"), &tail_ht.meta_arg_type()),
+                    &pair_tail_type,
                     &tail_ht.term(),
                 )
             };

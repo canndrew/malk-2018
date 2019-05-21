@@ -1,7 +1,11 @@
 use super::*;
 
 pub struct Interner<T> {
-    set: HashMap<Rc<T>, ()>,
+    inner: Mutex<Inner<T>>,
+}
+
+struct Inner<T> {
+    set: HashMap<Arc<T>, ()>,
     inserts_per_purge: usize,
     inserts_til_next_purge: usize,
 }
@@ -9,19 +13,23 @@ pub struct Interner<T> {
 impl<T: Hash + Eq> Interner<T> {
     pub fn new() -> Interner<T> {
         Interner {
-            set: HashMap::new(),
-            inserts_per_purge: 1,
-            inserts_til_next_purge: 1,
+            inner: Mutex::new(Inner {
+                set: HashMap::new(),
+                inserts_per_purge: 1,
+                inserts_til_next_purge: 1,
+            }),
         }
     }
 
-    pub fn insert(&mut self, value: T) -> Rc<T> {
-        self.inserts_per_purge -= 1;
-        if self.inserts_per_purge == 0 {
-            let length_of_set = self.set.len();
+    pub fn intern(&self, value: T) -> Arc<T> {
+        let mut inner = unwrap!(self.inner.lock());
+
+        inner.inserts_til_next_purge -= 1;
+        if inner.inserts_til_next_purge == 0 {
+            let length_of_set = inner.set.len();
             let mut num_purged = 0;
-            self.set.retain(|key, ()| {
-                if Rc::strong_count(key) > 1 {
+            inner.set.retain(|key, ()| {
+                if Arc::strong_count(key) > 1 {
                     true
                 } else {
                     num_purged += 1;
@@ -29,18 +37,18 @@ impl<T: Hash + Eq> Interner<T> {
                 }
             });
 
-            let mut next_inserts_per_purge = self.inserts_per_purge as u128;
+            let mut next_inserts_per_purge = inner.inserts_per_purge as u128;
             next_inserts_per_purge *= 1 + length_of_set as u128;
             next_inserts_per_purge /= 1 + 2 * num_purged;
-            self.inserts_per_purge = next_inserts_per_purge as usize;
-            self.inserts_til_next_purge = self.inserts_per_purge;
+            inner.inserts_per_purge = next_inserts_per_purge as usize;
+            inner.inserts_til_next_purge = inner.inserts_per_purge;
         }
 
-        match self.set.get_key_value(&value) {
+        match inner.set.get_key_value(&value) {
             Some((value, ())) => value.clone(),
             None => {
-                let ret = Rc::new(value);
-                self.set.insert(ret.clone(), ());
+                let ret = Arc::new(value);
+                inner.set.insert(ret.clone(), ());
                 ret
             },
         }

@@ -2,14 +2,21 @@ use super::*;
 use crate::syntax::{Ident, IdentOpt, Name, NameOpt};
 use pretty_assertions::{assert_eq, assert_ne};
 
-#[derive(Clone)]
+lazy_static! {
+    static ref CTXS: Interner<CtxInner> = Interner::new();
+    static ref BUMP_CACHE: Mutex<HashMap<(Ctx, u32, IdentOpt, Type), Ctx>> = Mutex::new(HashMap::new());
+    static ref SUBSTITUTE_CACHE: Mutex<HashMap<(Ctx, u32, IdentOpt, Term), Ctx>> = Mutex::new(HashMap::new());
+    static ref TRY_LIFT_CACHE: Mutex<HashMap<(Ctx, u32, u32), Option<Ctx>>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Hash, Eq, Clone)]
 pub struct Ctx {
-    inner: Rc<CtxInner>,
+    inner: Arc<CtxInner>,
 }
 
 impl PartialEq for Ctx {
     fn eq(&self, other: &Ctx) -> bool {
-        self.inner.kind == other.inner.kind
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -19,6 +26,7 @@ impl fmt::Debug for Ctx {
     }
 }
 
+#[derive(PartialEq, Eq, Debug)]
 struct CtxInner {
     kind: CtxKind,
     hash: u64,
@@ -30,7 +38,7 @@ impl Hash for CtxInner {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 enum CtxKind {
     Nil,
     Var {
@@ -79,7 +87,7 @@ impl Ctx {
             hasher.finish()
         };
         Ctx {
-            inner: Rc::new(CtxInner {
+            inner: CTXS.intern(CtxInner {
                 kind: CtxKind::Nil,
                 hash,
             }),
@@ -101,7 +109,7 @@ impl Ctx {
         let ident = ident.clone();
         let ty = ty.clone();
         Ctx {
-            inner: Rc::new(CtxInner {
+            inner: CTXS.intern(CtxInner {
                 kind: CtxKind::Var { parent, ident, ty },
                 hash,
             }),
@@ -128,7 +136,15 @@ impl Ctx {
 
     pub fn bump(&self, index: u32, bump_ident_opt: &IdentOpt, bump_ty: &Type) -> Ctx {
         assert_eq!(self.nth_parent(index), bump_ty.get_ctx());
-        if index == 0 {
+
+        let key = (self.clone(), index, bump_ident_opt.clone(), bump_ty.clone());
+        let cache = unwrap!(BUMP_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
+        let ret = if index == 0 {
             Ctx::bind(self, bump_ident_opt, bump_ty)
         } else {
             match self.kind() {
@@ -139,7 +155,11 @@ impl Ctx {
                     Ctx::bind(&parent, ident, &ty)
                 },
             }
-        }
+        };
+
+        let mut cache = unwrap!(BUMP_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn substitute(
@@ -148,7 +168,15 @@ impl Ctx {
         subst_ident_opt: &IdentOpt,
         subst_value: &Term,
     ) -> Ctx {
-        match self.kind() {
+
+        let key = (self.clone(), subst_index, subst_ident_opt.clone(), subst_value.clone());
+        let cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
+        let ret = match self.kind() {
             CtxKind::Nil => panic!("invalid substitution on context"),
             CtxKind::Var { parent, ident, ty } => {
                 if subst_index == 0 {
@@ -162,22 +190,40 @@ impl Ctx {
                     Ctx::bind(&parent, ident, &ty)
                 }
             },
-        }
+        };
+
+        let mut cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn try_lift(&self, cutoff: u32, lift_bumps: u32) -> Option<Ctx> {
-        if cutoff == 0 {
-            Some(self.nth_parent(lift_bumps))
-        } else {
-            match self.kind() {
-                CtxKind::Nil => panic!("invalid lifting operation"),
-                CtxKind::Var { parent, ident, ty } => {
-                    let parent = parent.try_lift(cutoff - 1, lift_bumps)?;
-                    let ty = ty.try_lift_out_of_ctx(cutoff - 1, lift_bumps)?;
-                    Some(parent.bind(ident, &ty))
-                },
+
+        let key = (self.clone(), cutoff, lift_bumps);
+        let cache = unwrap!(TRY_LIFT_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
+        let ret: Option<Ctx> = try {
+            if cutoff == 0 {
+                self.nth_parent(lift_bumps)
+            } else {
+                match self.kind() {
+                    CtxKind::Nil => panic!("invalid lifting operation"),
+                    CtxKind::Var { parent, ident, ty } => {
+                        let parent = parent.try_lift(cutoff - 1, lift_bumps)?;
+                        let ty = ty.try_lift_out_of_ctx(cutoff - 1, lift_bumps)?;
+                        parent.bind(ident, &ty)
+                    },
+                }
             }
-        }
+        };
+
+        let mut cache = unwrap!(TRY_LIFT_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     /*

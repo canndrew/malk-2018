@@ -2,9 +2,22 @@ use super::*;
 use crate::syntax::{Ident, IdentOpt, Name, NameOpt};
 use pretty_assertions::{assert_eq, assert_ne};
 
-#[derive(Clone)]
+lazy_static! {
+    static ref TYPES: Interner<TypeInner> = Interner::new();
+    static ref BUMP_CACHE: Mutex<HashMap<(Type, u32, IdentOpt, Type), Type>> = Mutex::new(HashMap::new());
+    static ref SUBSTITUTE_CACHE: Mutex<HashMap<(Type, u32, IdentOpt, Term), Type>> = Mutex::new(HashMap::new());
+    static ref TRY_LIFT_CACHE: Mutex<HashMap<(Type, u32, u32), Option<Type>>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Eq, Clone, Hash)]
 pub struct Type {
-    inner: Rc<TypeInner>,
+    inner: Arc<TypeInner>,
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Type) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 impl fmt::Debug for Type {
@@ -13,6 +26,7 @@ impl fmt::Debug for Type {
     }
 }
 
+#[derive(PartialEq, Eq)]
 struct TypeInner {
     kind: TypeKind,
     ctx: Ctx,
@@ -25,7 +39,7 @@ impl Hash for TypeInner {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum TypeKind {
     Embed(Term),
     Type {
@@ -46,37 +60,6 @@ pub enum TypeKind {
         arg: Type,
         res: Type,
     },
-}
-
-impl PartialEq for Type {
-    fn eq(&self, other: &Type) -> bool {
-        match (self.kind(), other.kind()) {
-            (TypeKind::Embed(term0), TypeKind::Embed(term1)) => {
-                term0 == term1
-            },
-            (TypeKind::Type { level: level0 }, TypeKind::Type { level: level1 }) => {
-                level0 == level1
-            },
-            (TypeKind::Equal { x0: x00, x1: x10 }, TypeKind::Equal { x0: x01, x1: x11 }) => {
-                x00 == x01 &&
-                x10 == x11
-            },
-            (TypeKind::Never, TypeKind::Never) => true,
-            (TypeKind::Unit, TypeKind::Unit) => true,
-            (TypeKind::Pair { head_ident_opt: head_ident_opt0, head: head0, tail: tail0 },
-             TypeKind::Pair { head_ident_opt: head_ident_opt1, head: head1, tail: tail1 }) => {
-                head_ident_opt0 == head_ident_opt1 &&
-                head0 == head1 &&
-                tail0 == tail1
-            },
-            (TypeKind::Func { arg: arg0, res: res0 },
-             TypeKind::Func { arg: arg1, res: res1 }) => {
-                arg0 == arg1 &&
-                res0 == res1
-            },
-            _ => false,
-        }
-    }
 }
 
 impl Type {
@@ -128,8 +111,16 @@ impl Type {
 
     pub fn bump_ctx(&self, index: u32, bump_ident_opt: &IdentOpt, ty: &Type) -> Type {
         assert_eq!(self.get_ctx().nth_parent(index), ty.get_ctx());
+
+        let key = (self.clone(), index, bump_ident_opt.clone(), ty.clone());
+        let cache = unwrap!(BUMP_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().bump(index, bump_ident_opt, ty);
-        match self.kind() {
+        let ret = match self.kind() {
             TypeKind::Embed(term) => Type::embed(&ctx, &term.bump_ctx(index, bump_ident_opt, ty)),
             TypeKind::Type { level } => Type::ty(&ctx, *level),
             TypeKind::Equal { x0, x1 } => {
@@ -149,7 +140,11 @@ impl Type {
                 let res = res.bump_ctx(index + 1, bump_ident_opt, ty);
                 Type::func(&ctx, &arg, &res)
             },
-        }
+        };
+
+        let mut cache = unwrap!(BUMP_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn bump_into_ctx(&self, lo_ctx: &Ctx, hi_ctx: &Ctx) -> Type {
@@ -170,8 +165,15 @@ impl Type {
         assert_eq!(trimmed_parent, subst_value.get_ctx());
         assert_eq!(trimmed_type, subst_value.get_type());
 
+        let key = (self.clone(), subst_index, subst_ident_opt.clone(), subst_value.clone());
+        let cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().substitute(subst_index, subst_ident_opt, subst_value);
-        match self.kind() {
+        let ret = match self.kind() {
             TypeKind::Embed(term) => {
                 let term = term.substitute(subst_index, subst_ident_opt, subst_value);
                 Type::embed(&ctx, &term)
@@ -195,7 +197,11 @@ impl Type {
                 let res = res.substitute(subst_index + 1, subst_ident_opt, subst_value);
                 Type::func(&ctx, &arg, &res)
             },
-        }
+        };
+
+        let mut cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     /*
@@ -230,32 +236,46 @@ impl Type {
     */
 
     pub fn try_lift_out_of_ctx(&self, cutoff: u32, lift_bumps: u32) -> Option<Type> {
+
+        let key = (self.clone(), cutoff, lift_bumps);
+        let cache = unwrap!(TRY_LIFT_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().try_lift(cutoff, lift_bumps)?;
-        Some(match self.kind() {
-            TypeKind::Embed(term) => {
-                Type::embed(&ctx, &term.try_lift_out_of_ctx(cutoff, lift_bumps)?)
-            },
-            TypeKind::Type { level } => {
-                Type::ty(&ctx, *level)
-            },
-            TypeKind::Equal { x0, x1 } => {
-                let x0 = x0.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let x1 = x1.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Type::equal(&ctx, &x0, &x1)
-            },
-            TypeKind::Never => Type::never(&ctx),
-            TypeKind::Unit => Type::unit(&ctx),
-            TypeKind::Pair { head_ident_opt, head, tail } => {
-                let head = head.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let tail = tail.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                Type::pair(&ctx, head_ident_opt, &head, &tail)
-            },
-            TypeKind::Func { arg, res } => {
-                let arg = arg.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let res = res.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                Type::func(&ctx, &arg, &res)
-            },
-        })
+        let ret: Option<Type> = try {
+            match self.kind() {
+                TypeKind::Embed(term) => {
+                    Type::embed(&ctx, &term.try_lift_out_of_ctx(cutoff, lift_bumps)?)
+                },
+                TypeKind::Type { level } => {
+                    Type::ty(&ctx, *level)
+                },
+                TypeKind::Equal { x0, x1 } => {
+                    let x0 = x0.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let x1 = x1.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Type::equal(&ctx, &x0, &x1)
+                },
+                TypeKind::Never => Type::never(&ctx),
+                TypeKind::Unit => Type::unit(&ctx),
+                TypeKind::Pair { head_ident_opt, head, tail } => {
+                    let head = head.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let tail = tail.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    Type::pair(&ctx, head_ident_opt, &head, &tail)
+                },
+                TypeKind::Func { arg, res } => {
+                    let arg = arg.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let res = res.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    Type::func(&ctx, &arg, &res)
+                },
+            }
+        };
+
+        let mut cache = unwrap!(TRY_LIFT_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn embed(ctx: &Ctx, term: &Term) -> Type {
@@ -291,7 +311,7 @@ impl Type {
             },
             _ => {
                 Type {
-                    inner: Rc::new(TypeInner {
+                    inner: TYPES.intern(TypeInner {
                         kind: TypeKind::Embed(term.clone()),
                         ctx: ctx.clone(),
                         hash,
@@ -309,7 +329,7 @@ impl Type {
             hasher.finish()
         };
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Type { level },
                 ctx: ctx.clone(),
                 hash,
@@ -324,7 +344,7 @@ impl Type {
             hasher.finish()
         };
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Never,
                 ctx: ctx.clone(),
                 hash,
@@ -339,7 +359,7 @@ impl Type {
             hasher.finish()
         };
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Unit,
                 ctx: ctx.clone(),
                 hash,
@@ -361,7 +381,7 @@ impl Type {
         let x0 = x0.clone();
         let x1 = x1.clone();
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Equal { x0, x1 },
                 ctx: ctx.clone(),
                 hash,
@@ -386,7 +406,7 @@ impl Type {
         let head = head.clone();
         let tail = tail.clone();
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Pair { head_ident_opt, head, tail },
                 ctx: ctx.clone(),
                 hash,
@@ -407,7 +427,7 @@ impl Type {
         let arg = arg.clone();
         let res = res.clone();
         Type {
-            inner: Rc::new(TypeInner {
+            inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Func { arg, res },
                 ctx: ctx.clone(),
                 hash,

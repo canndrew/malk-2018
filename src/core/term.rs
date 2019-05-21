@@ -2,9 +2,22 @@ pub use super::*;
 use crate::syntax::{Ident, IdentOpt, Name, NameOpt};
 use pretty_assertions::{assert_eq, assert_ne};
 
-#[derive(Clone)]
+lazy_static! {
+    static ref TERMS: Interner<TermInner> = Interner::new();
+    static ref BUMP_CACHE: Mutex<HashMap<(Term, u32, IdentOpt, Type), Term>> = Mutex::new(HashMap::new());
+    static ref SUBSTITUTE_CACHE: Mutex<HashMap<(Term, u32, IdentOpt, Term), Term>> = Mutex::new(HashMap::new());
+    static ref TRY_LIFT_CACHE: Mutex<HashMap<(Term, u32, u32), Option<Term>>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Eq, Clone, Hash)]
 pub struct Term {
-    inner: Rc<TermInner>,
+    inner: Arc<TermInner>,
+}
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Term) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 impl fmt::Debug for Term {
@@ -13,7 +26,7 @@ impl fmt::Debug for Term {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Debug)]
 struct TermInner {
     kind: TermKind,
     ty: Type,
@@ -26,7 +39,7 @@ impl Hash for TermInner {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum TermKind {
     Type {
         level: u32,
@@ -66,6 +79,7 @@ pub enum TermKind {
     Pair {
         head_ident_opt: IdentOpt,
         head: Term,
+        tail_type: Type,
         tail: Term,
     },
     PairSplit {
@@ -81,77 +95,6 @@ pub enum TermKind {
         func: Term,
         arg: Term,
     },
-}
-
-impl PartialEq for Term {
-    fn eq(&self, other: &Term) -> bool {
-        match (self.kind(), other.kind()) {
-            (TermKind::Type { level: level0 }, TermKind::Type { level: level1 }) => {
-                level0 == level1
-            },
-            (TermKind::Var { index: index0, name_opt: name_opt0 },
-             TermKind::Var { index: index1, name_opt: name_opt1 }) => {
-                index0 == index1 &&
-                name_opt0 == name_opt1
-            },
-            (TermKind::EqualType { x0: x00, x1: x10 },
-             TermKind::EqualType { x0: x01, x1: x11 }) => {
-                x00 == x01 &&
-                x10 == x11
-            },
-            (TermKind::UnitType, TermKind::UnitType) => true,
-            (TermKind::NeverType, TermKind::NeverType) => true,
-            (TermKind::PairType { head_ident_opt: head_ident_opt0, head_type: head_type0, tail_type: tail_type0 },
-             TermKind::PairType { head_ident_opt: head_ident_opt1, head_type: head_type1, tail_type: tail_type1 }) => {
-                head_ident_opt0 == head_ident_opt1 &&
-                head_type0 == head_type1 &&
-                tail_type0 == tail_type1
-            },
-            (TermKind::FuncType { arg_type: arg_type0, res_type: res_type0 },
-             TermKind::FuncType { arg_type: arg_type1, res_type: res_type1 }) => {
-                arg_type0 == arg_type1 &&
-                res_type0 == res_type1
-            },
-            (TermKind::Refl { x: x0 }, TermKind::Refl { x: x1 }) => {
-                x0 == x1
-            },
-            (TermKind::J { target_type: target_type0, target: target0, elim: elim0 },
-             TermKind::J { target_type: target_type1, target: target1, elim: elim1 }) => {
-                target_type0 == target_type1 &&
-                target0 == target1 &&
-                elim0 == elim1
-            },
-            (TermKind::Abort { target_type: target_type0, elim: elim0 },
-             TermKind::Abort { target_type: target_type1, elim: elim1 }) => {
-                target_type0 == target_type1 &&
-                elim0 == elim1
-            },
-            (TermKind::Unit, TermKind::Unit) => true,
-            (TermKind::Pair { head_ident_opt: head_ident_opt0, head: head0, tail: tail0 },
-             TermKind::Pair { head_ident_opt: head_ident_opt1, head: head1, tail: tail1 }) => {
-                head_ident_opt0 == head_ident_opt1 &&
-                head0 == head1 &&
-                tail0 == tail1
-            },
-            (TermKind::PairSplit { target_type: target_type0, target: target0, elim: elim0 },
-             TermKind::PairSplit { target_type: target_type1, target: target1, elim: elim1 }) => {
-                target_type0 == target_type1 &&
-                target0 == target1 &&
-                elim0 == elim1
-            },
-            (TermKind::Func { arg_type: arg_type0, res: res0 },
-             TermKind::Func { arg_type: arg_type1, res: res1 }) => {
-                arg_type0 == arg_type1 &&
-                res0 == res1
-            },
-            (TermKind::App { func: func0, arg: arg0 },
-             TermKind::App { func: func1, arg: arg1 }) => {
-                func0 == func1 &&
-                arg0 == arg1
-            },
-            _ => false,
-        }
-    }
 }
 
 impl Term {
@@ -173,8 +116,16 @@ impl Term {
 
     pub fn bump_ctx(&self, bump_index: u32, bump_ident_opt: &IdentOpt, bump_ty: &Type) -> Term {
         assert_eq!(self.get_ctx().nth_parent(bump_index), bump_ty.get_ctx());
+
+        let key = (self.clone(), bump_index, bump_ident_opt.clone(), bump_ty.clone());
+        let cache = unwrap!(BUMP_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().bump(bump_index, bump_ident_opt, bump_ty);
-        match self.kind() {
+        let ret = match self.kind() {
             TermKind::Type { level } => Term::ty(&ctx, *level),
             TermKind::Var { index, name_opt } => {
                 if *index >= bump_index {
@@ -217,10 +168,11 @@ impl Term {
                 Term::abort(&ctx, &target_type, &elim)
             },
             TermKind::Unit => Term::unit(&ctx),
-            TermKind::Pair { head_ident_opt, head, tail } => {
+            TermKind::Pair { head_ident_opt, head, tail_type, tail } => {
                 let head = head.bump_ctx(bump_index, bump_ident_opt, bump_ty);
-                let tail = tail.bump_ctx(bump_index + 1, bump_ident_opt, bump_ty);
-                Term::pair(&ctx, head_ident_opt, &head, &tail)
+                let tail_type = tail_type.bump_ctx(bump_index + 1, bump_ident_opt, bump_ty);
+                let tail = tail.bump_ctx(bump_index, bump_ident_opt, bump_ty);
+                Term::pair(&ctx, head_ident_opt, &head, &tail_type, &tail)
             },
             TermKind::PairSplit { target_type, target, elim } => {
                 let target_type = target_type.bump_ctx(bump_index + 2, bump_ident_opt, bump_ty);
@@ -238,7 +190,11 @@ impl Term {
                 let arg = arg.bump_ctx(bump_index, bump_ident_opt, bump_ty);
                 Term::app(&ctx, &func, &arg)
             },
-        }
+        };
+
+        let mut cache = unwrap!(BUMP_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn bump_into_ctx(&self, lo_ctx: &Ctx, hi_ctx: &Ctx) -> Term {
@@ -254,8 +210,16 @@ impl Term {
     }
 
     pub fn substitute(&self, subst_index: u32, subst_ident_opt: &IdentOpt, subst_value: &Term) -> Term {
+
+        let key = (self.clone(), subst_index, subst_ident_opt.clone(), subst_value.clone());
+        let cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().substitute(subst_index, subst_ident_opt, subst_value);
-        match self.kind() {
+        let ret = match self.kind() {
             TermKind::Type { level } => Term::ty(&ctx, *level),
             TermKind::Var { index, name_opt } => {
                 if *index == subst_index {
@@ -301,10 +265,11 @@ impl Term {
                 Term::abort(&ctx, &target_type, &elim)
             },
             TermKind::Unit => Term::unit(&ctx),
-            TermKind::Pair { head_ident_opt, head, tail } => {
+            TermKind::Pair { head_ident_opt, head, tail_type, tail } => {
                 let head = head.substitute(subst_index, subst_ident_opt, subst_value);
-                let tail = tail.substitute(subst_index + 1, subst_ident_opt, subst_value);
-                Term::pair(&ctx, head_ident_opt, &head, &tail)
+                let tail_type = tail_type.substitute(subst_index + 1, subst_ident_opt, subst_value);
+                let tail = tail.substitute(subst_index, subst_ident_opt, subst_value);
+                Term::pair(&ctx, head_ident_opt, &head, &tail_type, &tail)
             },
             TermKind::PairSplit { target_type, target, elim } => {
                 let target_type = target_type.substitute(subst_index + 2, subst_ident_opt, subst_value);
@@ -322,7 +287,11 @@ impl Term {
                 let arg = arg.substitute(subst_index, subst_ident_opt, subst_value);
                 Term::app(&ctx, &func, &arg)
             },
-        }
+        };
+
+        let mut cache = unwrap!(SUBSTITUTE_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     /*
@@ -360,84 +329,99 @@ impl Term {
     */
 
     pub fn try_lift_out_of_ctx(&self, cutoff: u32, lift_bumps: u32) -> Option<Term> {
+
+        let key = (self.clone(), cutoff, lift_bumps);
+        let cache = unwrap!(TRY_LIFT_CACHE.lock());
+        if let Some(x) = cache.get(&key) {
+            return x.clone();
+        };
+        drop(cache);
+
         let ctx = self.get_ctx().try_lift(cutoff, lift_bumps)?;
-        Some(match self.kind() {
-            TermKind::Type { level } => {
-                Term::ty(&ctx, *level)
-            },
-            TermKind::Var { index, name_opt } => {
-                if *index > cutoff {
-                    if *index < cutoff + lift_bumps {
-                        return None;
-                    } else {
-                        let mut unbump_ctx = self.get_ctx();
-                        let mut name_opt = name_opt.clone();
-                        for _ in 0..lift_bumps {
-                            let (parent, ident_opt, _) = unbump_ctx.unbind();
-                            unbump_ctx = parent;
-                            name_opt = name_opt.unbump_over_ident_opt(&ident_opt);
+        let ret: Option<Term> = try {
+            match self.kind() {
+                TermKind::Type { level } => {
+                    Term::ty(&ctx, *level)
+                },
+                TermKind::Var { index, name_opt } => {
+                    if *index > cutoff {
+                        if *index < cutoff + lift_bumps {
+                            return None;
+                        } else {
+                            let mut unbump_ctx = self.get_ctx();
+                            let mut name_opt = name_opt.clone();
+                            for _ in 0..lift_bumps {
+                                let (parent, ident_opt, _) = unbump_ctx.unbind();
+                                unbump_ctx = parent;
+                                name_opt = name_opt.unbump_over_ident_opt(&ident_opt);
+                            }
+                            Term::var(&ctx, *index - lift_bumps, &name_opt)
                         }
-                        Term::var(&ctx, *index - lift_bumps, &name_opt)
+                    } else {
+                        Term::var(&ctx, *index, name_opt)
                     }
-                } else {
-                    Term::var(&ctx, *index, name_opt)
-                }
-            },
-            TermKind::EqualType { x0, x1 } => {
-                let x0 = x0.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let x1 = x1.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::equal_type(&ctx, &x0, &x1)
-            },
-            TermKind::UnitType => Term::unit_type(&ctx),
-            TermKind::NeverType => Term::never_type(&ctx),
-            TermKind::PairType { head_ident_opt, head_type, tail_type } => {
-                let head_type = head_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let tail_type = tail_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                Term::pair_type(&ctx, head_ident_opt, &head_type, &tail_type)
-            },
-            TermKind::FuncType { arg_type, res_type } => {
-                let arg_type = arg_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let res_type = res_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                Term::func_type(&ctx, &arg_type, &res_type)
-            },
-            TermKind::Refl { x } => {
-                let x = x.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::refl(&ctx, &x)
-            },
-            TermKind::J { target_type, target, elim } => {
-                let target_type = target_type.try_lift_out_of_ctx(cutoff + 3, lift_bumps)?;
-                let target = target.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::j(&ctx, &target_type, &target, &elim)
-            },
-            TermKind::Abort { target_type, elim } => {
-                let target_type = target_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::abort(&ctx, &target_type, &elim)
-            },
-            TermKind::Unit => Term::unit(&ctx),
-            TermKind::Pair { head_ident_opt, head, tail } => {
-                let head = head.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let tail = tail.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::pair(&ctx, head_ident_opt, &head, &tail)
-            },
-            TermKind::PairSplit { target_type, target, elim } => {
-                let target_type = target_type.try_lift_out_of_ctx(cutoff + 2, lift_bumps)?;
-                let target = target.try_lift_out_of_ctx(cutoff + 2, lift_bumps)?;
-                let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::pair_split(&ctx, &target_type, &target, &elim)
-            },
-            TermKind::Func { arg_type, res } => {
-                let arg_type = arg_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let res = res.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
-                Term::func(&ctx, &arg_type, &res)
-            },
-            TermKind::App { func, arg } => {
-                let func = func.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                let arg = arg.try_lift_out_of_ctx(cutoff, lift_bumps)?;
-                Term::app(&ctx, &func, &arg)
-            },
-        })
+                },
+                TermKind::EqualType { x0, x1 } => {
+                    let x0 = x0.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let x1 = x1.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::equal_type(&ctx, &x0, &x1)
+                },
+                TermKind::UnitType => Term::unit_type(&ctx),
+                TermKind::NeverType => Term::never_type(&ctx),
+                TermKind::PairType { head_ident_opt, head_type, tail_type } => {
+                    let head_type = head_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let tail_type = tail_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    Term::pair_type(&ctx, head_ident_opt, &head_type, &tail_type)
+                },
+                TermKind::FuncType { arg_type, res_type } => {
+                    let arg_type = arg_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let res_type = res_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    Term::func_type(&ctx, &arg_type, &res_type)
+                },
+                TermKind::Refl { x } => {
+                    let x = x.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::refl(&ctx, &x)
+                },
+                TermKind::J { target_type, target, elim } => {
+                    let target_type = target_type.try_lift_out_of_ctx(cutoff + 3, lift_bumps)?;
+                    let target = target.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::j(&ctx, &target_type, &target, &elim)
+                },
+                TermKind::Abort { target_type, elim } => {
+                    let target_type = target_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::abort(&ctx, &target_type, &elim)
+                },
+                TermKind::Unit => Term::unit(&ctx),
+                TermKind::Pair { head_ident_opt, head, tail_type, tail } => {
+                    let head = head.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let tail_type = tail_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    let tail = tail.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::pair(&ctx, head_ident_opt, &head, &tail_type, &tail)
+                },
+                TermKind::PairSplit { target_type, target, elim } => {
+                    let target_type = target_type.try_lift_out_of_ctx(cutoff + 2, lift_bumps)?;
+                    let target = target.try_lift_out_of_ctx(cutoff + 2, lift_bumps)?;
+                    let elim = elim.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::pair_split(&ctx, &target_type, &target, &elim)
+                },
+                TermKind::Func { arg_type, res } => {
+                    let arg_type = arg_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let res = res.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
+                    Term::func(&ctx, &arg_type, &res)
+                },
+                TermKind::App { func, arg } => {
+                    let func = func.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    let arg = arg.try_lift_out_of_ctx(cutoff, lift_bumps)?;
+                    Term::app(&ctx, &func, &arg)
+                },
+            }
+        };
+
+        let mut cache = unwrap!(TRY_LIFT_CACHE.lock());
+        cache.insert(key, ret.clone());
+        ret
     }
 
     pub fn ty(ctx: &Ctx, level: u32) -> Term {
@@ -448,7 +432,7 @@ impl Term {
             hasher.finish()
         };
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Type { level },
                 ty: Type::ty(ctx, level + 1),
                 hash,
@@ -470,7 +454,7 @@ impl Term {
         let ty = ctx.lookup_and_bump_out(index, &name_opt);
         let name_opt = name_opt.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Var { index, name_opt },
                 ty,
                 hash,
@@ -493,7 +477,7 @@ impl Term {
         let x0 = x0.clone();
         let x1 = x1.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::EqualType { x0, x1 },
                 ty: Type::ty(ctx, level),
                 hash,
@@ -508,7 +492,7 @@ impl Term {
             hasher.finish()
         };
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::UnitType,
                 ty: Type::ty(ctx, 0),
                 hash,
@@ -523,7 +507,7 @@ impl Term {
             hasher.finish()
         };
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::NeverType,
                 ty: Type::ty(ctx, 0),
                 hash,
@@ -551,7 +535,7 @@ impl Term {
         let head_type = head_type.clone();
         let tail_type = tail_type.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::PairType { head_ident_opt, head_type, tail_type },
                 ty: Type::ty(ctx, level),
                 hash,
@@ -575,7 +559,7 @@ impl Term {
         let arg_type = arg_type.clone();
         let res_type = res_type.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::FuncType { arg_type, res_type },
                 ty: Type::ty(ctx, level),
                 hash,
@@ -594,7 +578,7 @@ impl Term {
         let ty = Type::equal(ctx, x, x);
         let x = x.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Refl { x },
                 ty: ty,
                 hash,
@@ -666,7 +650,7 @@ impl Term {
             let target = target.clone();
             let elim = elim.clone();
             Term {
-                inner: Rc::new(TermInner {
+                inner: TERMS.intern(TermInner {
                     kind: TermKind::J { target_type, target, elim },
                     ty: final_ty,
                     hash,
@@ -692,7 +676,7 @@ impl Term {
         let target_type = target_type.clone();
         let elim = elim.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Abort { target_type, elim },
                 ty: final_type,
                 hash,
@@ -707,7 +691,7 @@ impl Term {
             hasher.finish()
         };
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Unit,
                 ty: Type::unit(ctx),
                 hash,
@@ -715,9 +699,17 @@ impl Term {
         }
     }
 
-    pub fn pair(ctx: &Ctx, head_ident_opt: &IdentOpt, head: &Term, tail: &Term) -> Term {
+    pub fn pair(
+        ctx: &Ctx,
+        head_ident_opt: &IdentOpt,
+        head: &Term,
+        tail_type: &Type,
+        tail: &Term,
+    ) -> Term {
         assert_eq!(*ctx, head.get_ctx());
-        assert_eq!(Ctx::bind(ctx, head_ident_opt, &head.get_type()), tail.get_ctx());
+        assert_eq!(ctx.bind(head_ident_opt, &head.get_type()), tail_type.get_ctx());
+        assert_eq!(*ctx, tail.get_ctx());
+        assert_eq!(tail_type.substitute(0, head_ident_opt, head), tail.get_type());
         let hash = {
             let mut hasher = DefaultHasher::new();
             hasher.write(b"Pair");
@@ -728,13 +720,14 @@ impl Term {
             hasher.write_u64(tail.get_hash());
             hasher.finish()
         };
-        let ty = Type::pair(ctx, head_ident_opt, &head.get_type(), &tail.get_type());
+        let ty = Type::pair(ctx, head_ident_opt, &head.get_type(), &tail_type);
         let head_ident_opt = head_ident_opt.clone();
         let head = head.clone();
+        let tail_type = tail_type.clone();
         let tail = tail.clone();
         Term {
-            inner: Rc::new(TermInner {
-                kind: TermKind::Pair { head_ident_opt, head, tail },
+            inner: TERMS.intern(TermInner {
+                kind: TermKind::Pair { head_ident_opt, head, tail_type, tail },
                 ty: ty,
                 hash,
             }),
@@ -780,7 +773,7 @@ impl Term {
             },
         };
 
-        if let TermKind::Pair { head_ident_opt, head, tail } = elim.kind() {
+        if let TermKind::Pair { head_ident_opt, head, tail, .. } = elim.kind() {
             target
             .substitute(1, head_ident_opt, head)
             .substitute(0, &IdentOpt::fake("tail"), tail)
@@ -789,7 +782,7 @@ impl Term {
             let target = target.clone();
             let elim = elim.clone();
             Term {
-                inner: Rc::new(TermInner {
+                inner: TERMS.intern(TermInner {
                     kind: TermKind::PairSplit { target_type, target, elim },
                     ty: final_type,
                     hash,
@@ -813,7 +806,7 @@ impl Term {
         let arg_type = arg_type.clone();
         let res = res.clone();
         Term {
-            inner: Rc::new(TermInner {
+            inner: TERMS.intern(TermInner {
                 kind: TermKind::Func { arg_type, res },
                 ty: ty,
                 hash,
@@ -846,7 +839,7 @@ impl Term {
             let func = func.clone();
             let arg = arg.clone();
             Term {
-                inner: Rc::new(TermInner {
+                inner: TERMS.intern(TermInner {
                     kind: TermKind::App { func, arg },
                     ty: final_type,
                     hash,
