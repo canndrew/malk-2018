@@ -51,6 +51,7 @@ pub enum TypeKind {
     },
     Never,
     Unit,
+    String,
     Pair {
         head_ident_opt: IdentOpt,
         head: Type,
@@ -75,6 +76,7 @@ impl Type {
             TypeKind::Equal { x0, x1 } => Term::equal_type(&ctx, x0, x1),
             TypeKind::Never => Term::never_type(&ctx),
             TypeKind::Unit => Term::unit_type(&ctx),
+            TypeKind::String => Term::string_type(&ctx),
             TypeKind::Pair { head_ident_opt, head, tail } => Term::pair_type(&ctx, head_ident_opt, head, tail),
             TypeKind::Func { arg, res } => Term::func_type(&ctx, arg, res),
         }
@@ -95,7 +97,8 @@ impl Type {
             TypeKind::Type { level } => level + 1,
             TypeKind::Equal { x0, .. } => x0.get_type().get_level(),
             TypeKind::Never |
-            TypeKind::Unit => 0,
+            TypeKind::Unit |
+            TypeKind::String => 0,
             TypeKind::Pair { head, tail, .. } => cmp::max(head.get_level(), tail.get_level()),
             TypeKind::Func { arg, res } => cmp::max(arg.get_level(), res.get_level()),
         }
@@ -130,6 +133,7 @@ impl Type {
             },
             TypeKind::Never => Type::never(&ctx),
             TypeKind::Unit => Type::unit(&ctx),
+            TypeKind::String => Type::string(&ctx),
             TypeKind::Pair { head_ident_opt, head, tail } => {
                 let head = head.bump_ctx(index, bump_ident_opt, ty);
                 let tail = tail.bump_ctx(index + 1, bump_ident_opt, ty);
@@ -187,6 +191,7 @@ impl Type {
             },
             TypeKind::Never => Type::never(&ctx),
             TypeKind::Unit => Type::unit(&ctx),
+            TypeKind::String => Type::string(&ctx),
             TypeKind::Pair { head_ident_opt, head, tail } => {
                 let head = head.substitute(subst_index, subst_ident_opt, subst_value);
                 let tail = tail.substitute(subst_index + 1, subst_ident_opt, subst_value);
@@ -260,6 +265,7 @@ impl Type {
                 },
                 TypeKind::Never => Type::never(&ctx),
                 TypeKind::Unit => Type::unit(&ctx),
+                TypeKind::String => Type::string(&ctx),
                 TypeKind::Pair { head_ident_opt, head, tail } => {
                     let head = head.try_lift_out_of_ctx(cutoff, lift_bumps)?;
                     let tail = tail.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
@@ -302,6 +308,9 @@ impl Type {
             },
             TermKind::NeverType => {
                 Type::never(&ctx)
+            },
+            TermKind::StringType => {
+                Type::string(&ctx)
             },
             TermKind::PairType { head_ident_opt, head_type, tail_type } => {
                 Type::pair(&ctx, head_ident_opt, head_type, tail_type)
@@ -361,6 +370,21 @@ impl Type {
         Type {
             inner: TYPES.intern(TypeInner {
                 kind: TypeKind::Unit,
+                ctx: ctx.clone(),
+                hash,
+            }),
+        }
+    }
+
+    pub fn string(ctx: &Ctx) -> Type {
+        let hash = {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(b"String");
+            hasher.finish()
+        };
+        Type {
+            inner: TYPES.intern(TypeInner {
+                kind: TypeKind::String,
                 ctx: ctx.clone(),
                 hash,
             }),

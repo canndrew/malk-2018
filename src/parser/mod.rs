@@ -76,9 +76,11 @@ impl<T> Ast<T> {
         }
     }
 
+    /*
     fn into_box(self) -> Box<T> {
         self.node
     }
+    */
 
     pub fn into_inner(self) -> T {
         *self.node

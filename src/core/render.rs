@@ -23,6 +23,7 @@ fn term_precedence(term: &Term) -> Precedence {
         TermKind::Pair { .. } |
         TermKind::UnitType |
         TermKind::NeverType |
+        TermKind::StringType |
         TermKind::PairType { .. } => {
             Precedence::Enclosed
         },
@@ -61,6 +62,7 @@ fn type_precedence(ty: &Type) -> Precedence {
         TypeKind::Equal { .. } => Precedence::Equality,
         TypeKind::Never |
         TypeKind::Unit |
+        TypeKind::String |
         TypeKind::Pair { .. } => Precedence::Enclosed,
         TypeKind::Func { .. } => Precedence::Func,
     }
@@ -94,6 +96,9 @@ pub fn render_type(
         },
         TypeKind::Never => {
             write!(f, "@[]")?;
+        },
+        TypeKind::String => {
+            write!(f, "String")?;
         },
         TypeKind::Pair { head_ident_opt, head, tail } => {
             writeln!(f, "#(")?;
@@ -159,6 +164,7 @@ pub fn render_term(
         TermKind::UnitType { .. } |
         TermKind::NeverType { .. } |
         TermKind::PairType { .. } |
+        TermKind::StringType { .. } |
         TermKind::FuncType { .. } => {
             render_type(&Type::from_term(term.clone()), f, indent, Precedence::Func)?;
         },

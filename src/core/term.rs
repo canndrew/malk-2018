@@ -54,6 +54,7 @@ pub enum TermKind {
     },
     UnitType,
     NeverType,
+    StringType,
     PairType {
         head_ident_opt: IdentOpt,
         head_type: Type,
@@ -142,6 +143,7 @@ impl Term {
             },
             TermKind::UnitType => Term::unit_type(&ctx),
             TermKind::NeverType => Term::never_type(&ctx),
+            TermKind::StringType => Term::string_type(&ctx),
             TermKind::PairType { head_ident_opt, head_type, tail_type } => {
                 let head_type = head_type.bump_ctx(bump_index, bump_ident_opt, bump_ty);
                 let tail_type = tail_type.bump_ctx(bump_index + 1, bump_ident_opt, bump_ty);
@@ -239,6 +241,7 @@ impl Term {
             },
             TermKind::UnitType => Term::unit_type(&ctx),
             TermKind::NeverType => Term::never_type(&ctx),
+            TermKind::StringType => Term::string_type(&ctx),
             TermKind::PairType { head_ident_opt, head_type, tail_type } => {
                 let head_type = head_type.substitute(subst_index, subst_ident_opt, subst_value);
                 let tail_type = tail_type.substitute(subst_index + 1, subst_ident_opt, subst_value);
@@ -368,6 +371,7 @@ impl Term {
                 },
                 TermKind::UnitType => Term::unit_type(&ctx),
                 TermKind::NeverType => Term::never_type(&ctx),
+                TermKind::StringType => Term::string_type(&ctx),
                 TermKind::PairType { head_ident_opt, head_type, tail_type } => {
                     let head_type = head_type.try_lift_out_of_ctx(cutoff, lift_bumps)?;
                     let tail_type = tail_type.try_lift_out_of_ctx(cutoff + 1, lift_bumps)?;
@@ -494,6 +498,21 @@ impl Term {
         Term {
             inner: TERMS.intern(TermInner {
                 kind: TermKind::UnitType,
+                ty: Type::ty(ctx, 0),
+                hash,
+            }),
+        }
+    }
+
+    pub fn string_type(ctx: &Ctx) -> Term {
+        let hash = {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(b"StringType");
+            hasher.finish()
+        };
+        Term {
+            inner: TERMS.intern(TermInner {
+                kind: TermKind::StringType,
                 ty: Type::ty(ctx, 0),
                 hash,
             }),
