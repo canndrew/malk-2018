@@ -1,56 +1,64 @@
 use super::*;
 use crate::parser::Ast;
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash)]
-pub struct Ident(pub String);
-
-#[derive(Clone, Eq, Debug)]
-pub enum IdentOpt {
-    Real(Ident),
-    Fake(&'static str),
+lazy_static! {
+    static ref IDENTS: Interner<IdentInner> = Interner::new();
 }
 
-impl Hash for IdentOpt {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
-        if let IdentOpt::Real(ident) = self {
-            ident.hash(hasher);
-        }
+#[derive(Clone, Eq, Hash)]
+pub struct Ident {
+    inner: Arc<IdentInner>,
+}
+
+impl PartialEq for Ident {
+    fn eq(&self, other: &Ident) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
-impl From<Ident> for IdentOpt {
-    fn from(ident: Ident) -> IdentOpt {
-        IdentOpt::Real(ident)
-    }
-}
-
-impl IdentOpt {
-    pub fn fake(s: &'static str) -> IdentOpt {
-        IdentOpt::Fake(s)
-    }
-}
-
-impl PartialEq for IdentOpt {
-    fn eq(&self, other: &IdentOpt) -> bool {
-        match (self, other) {
-            (IdentOpt::Real(ident0), IdentOpt::Real(ident1)) => ident0 == ident1,
-            (IdentOpt::Fake(_), IdentOpt::Fake(_)) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Ident {
-    pub fn as_str(&self) -> &str {
-        let Ident(s) = self;
-        s
+impl fmt::Debug for Ident {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&self.inner.string, f)
     }
 }
 
 impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let Ident(s) = self;
-        write!(f, "{}", s)
+        fmt::Display::fmt(&self.inner.string, f)
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+struct IdentInner {
+    string: String,
+    hash: u64,
+}
+
+impl Hash for IdentInner {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.hash.hash(hasher)
+    }
+}
+
+impl Ident {
+    pub fn as_str(&self) -> &str {
+        &self.inner.string
+    }
+
+    pub fn get_hash(&self) -> u64 {
+        self.inner.hash
+    }
+
+    pub fn new<S: Into<String>>(s: S) -> Ident {
+        let string = s.into();
+        let hash = {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(string.as_bytes());
+            hasher.finish()
+        };
+        Ident {
+            inner: IDENTS.intern(IdentInner { string, hash }),
+        }
     }
 }
 

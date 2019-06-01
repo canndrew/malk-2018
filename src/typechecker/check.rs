@@ -1,16 +1,15 @@
 use super::*;
 
 use crate::core::render;
-use crate::syntax::{Expr, NameOpt, IdentOpt};
+use crate::syntax::Expr;
+use pretty_assertions::{assert_eq, assert_ne};
 
 pub fn check_doc(expr: &Expr) -> Result<Term, Error> {
     let ctx = Ctx::empty();
     let expected_type = Type::unit(&ctx);
-    println!("checking doc");
-    let ht = has_type(&ctx, &expected_type, expr)?;
-    println!("checked!");
+    let ht = has_type(&ctx, &StrName::lit(&ctx, "doc_unit_constraint"), &expected_type, expr)?;
     if let TypeKind::Unit = ht.meta_arg_type().kind() {
-        return Ok(ht.term().substitute(0, &IdentOpt::fake("meta_arg"), &Term::unit(&ctx)));
+        return Ok(ht.term().substitute(0, &ht.meta_arg_name(), &Term::unit(&ctx)));
     }
 
     struct Error { ht: HasType };
@@ -29,6 +28,7 @@ pub fn check_doc(expr: &Expr) -> Result<Term, Error> {
 // the required type.
 #[derive(Debug)]
 pub struct HasType {
+    meta_arg_name: StrName,
     meta_arg_type: Type,
     term: Term,
 }
@@ -38,413 +38,537 @@ impl HasType {
         self.meta_arg_type.clone()
     }
 
+    pub fn meta_arg_name(&self) -> StrName {
+        self.meta_arg_name.clone()
+    }
+
     pub fn term(&self) -> Term {
         self.term.clone()
     }
 
-    pub fn new_from_split_ctx(ctx: &Ctx, index: u32, term: &Term) -> HasType {
+    pub fn new_from_split_ctx(ctx: &Ctx, meta_arg_name: &StrName, index: u32, term: &Term) -> HasType {
         assert_eq!(*ctx, term.get_ctx());
-
-        println!("entered new_from_split_ctx");
-        println!("ctx == {:#?}", ctx.debug_summary());
-
         let mut ctx = ctx.clone();
         let mut meta_arg_type = Type::unit(&ctx);
-        let mut term = term.bump_ctx(0, &IdentOpt::fake("meta_arg"), &meta_arg_type);
+        let terminator_name = StrName::lit(&ctx, "split_ctx_terminator");
+        let mut term = term.bump_ctx(0, &terminator_name, &meta_arg_type);
         for _ in 0..index {
-
             let (parent, ident_opt, ty) = ctx.unbind();
             let next_ctx = parent;
             let next_meta_arg_type = Type::pair(&next_ctx, &ident_opt, &ty, &meta_arg_type);
-            let term_ctx = next_ctx.bind(&IdentOpt::fake("meta_arg"), &next_meta_arg_type);
-            let bumped_term = term.bump_ctx(2, &IdentOpt::fake("meta_arg"), &next_meta_arg_type);
+            //let next_meta_arg_name = StrName::lit(&next_ctx, "split_ctx_tail");
+            //let next_meta_arg_name = meta_arg_name.bump_into_ctx(&ctx, &next_ctx);
+            let term_ctx = next_ctx.bind(meta_arg_name, &next_meta_arg_type);
+            let bumped_term = term.bump_ctx(2, meta_arg_name, &next_meta_arg_type);
             term = Term::pair_split(
                 &term_ctx,
                 &bumped_term.get_type(),
                 &bumped_term,
-                &Term::var(&term_ctx, 0, &NameOpt::fake("meta_arg"))
+                /*
+                &Term::var(&term_ctx, 0, &{
+                    next_meta_arg_name
+                    .bump_ctx(0, &next_meta_arg_name, &next_meta_arg_type)
+                }),
+                */
+                &Term::var(&term_ctx, 0, meta_arg_name),
             );
             ctx = next_ctx;
             meta_arg_type = next_meta_arg_type;
         }
-        HasType::new(&ctx, &meta_arg_type, &term)
+        HasType::new(&ctx, meta_arg_name, &meta_arg_type, &term)
     }
 
-    pub fn new(ctx: &Ctx, meta_arg_type: &Type, term: &Term) -> HasType {
-        let (meta_arg_type, subst, _) = simplify(ctx, meta_arg_type);
+    pub fn new(ctx: &Ctx, meta_arg_name: &StrName, meta_arg_type: &Type, term: &Term) -> HasType {
+        assert_eq!(ctx.bind(meta_arg_name, meta_arg_type), term.get_ctx());
+
+        let (meta_arg_type, subst, _) = simplify(ctx, meta_arg_name, meta_arg_type);
         let term = {
             term
-            .bump_ctx(1, &IdentOpt::fake("meta_arg"), &meta_arg_type)
-            .substitute(0, &IdentOpt::fake("meta_arg"), &subst)
+            .bump_ctx(1, meta_arg_name, &meta_arg_type)
+            .substitute(0, &meta_arg_name.bump_ctx(0, &meta_arg_name, &meta_arg_type), &subst)
         };
-        HasType { meta_arg_type, term }
+        let meta_arg_name = meta_arg_name.clone();
+        HasType { meta_arg_name, meta_arg_type, term }
     }
-
-    /*
-    pub fn unbump_out_of_ctx(&self, lo_ctx: &Ctx, hi_ctx: &Ctx) -> (Type, Term) {
-        let mut hi_ctx = hi_ctx.clone();
-        let mut meta_arg_type = self.meta_arg_type.clone();
-        let mut term = self.term.clone();
-        let mut bumps = 0;
-        while *lo_ctx != hi_ctx {
-            let (parent, ident_opt, bump_ty) = hi_ctx.unbind();
-            meta_arg_type = Type::func(&parent, &bump_ty, &meta_arg_type);
-            let new_term_ctx = hi_ctx.bump(1, &IdentOpt::fake("meta_arg"), &meta_arg_type);
-            term = {
-                term
-                .bump_ctx(bumps + 2, &IdentOpt::fake("meta_arg"), &meta_arg_type)
-                .substitute(bumps, &IdentOpt::fake("meta_arg"), &Term::app(
-                    &new_term_ctx,
-                    &Term::var(&new_term_ctx, 1, &NameOpt::fake("meta_arg")),
-                    &Term::var(&new_term_ctx, 0, &NameOpt::new(&ident_opt, 0)),
-                ))
-            };
-            hi_ctx = parent;
-            bumps += 1;
-        }
-        (meta_arg_type, term)
-    }
-    */
 }
 
-pub fn has_type(ctx: &Ctx, ty: &Type, expr: &Expr) -> Result<HasType, Error> {
+pub fn has_type(ctx: &Ctx, meta_arg_name: &StrName, ty: &Type, expr: &Expr) -> Result<HasType, Error> {
     assert_eq!(*ctx, ty.get_ctx());
     match expr {
         Expr::Var(name) => {
-            let (index, var_ty) = match ctx.try_lookup(name) {
+            let bumps = name.bumps();
+            let name = StrName::from_term(Term::string_lit(ctx, &name.ident()));
+            let (index, var_ty) = match ctx.try_lookup(bumps, &name) {
                 Some(x) => x,
                 None => bail!("unknown variable"),
             };
-            let term = Term::var(ctx, index, &NameOpt::from(name.clone()));
-            Ok(as_sub_type(ctx, ty, &var_ty, &term))
+            let term = Term::var(ctx, index, &name);
+            Ok(as_sub_type(ctx, meta_arg_name, ty, &var_ty, &term))
         },
         Expr::Type { bumps } => {
             let term = Term::ty(ctx, *bumps);
             let term_ty = Type::ty(ctx, *bumps + 1);
-            Ok(as_sub_type(ctx, ty, &term_ty, &term))
+            Ok(as_sub_type(ctx, meta_arg_name, ty, &term_ty, &term))
         },
         Expr::Unit => {
             let term = Term::unit(ctx);
             let term_ty = Type::unit(ctx);
-            Ok(as_sub_type(ctx, ty, &term_ty, &term))
+            Ok(as_sub_type(ctx, meta_arg_name, ty, &term_ty, &term))
         },
         Expr::UnitType => {
             let term = Term::unit_type(ctx);
             let term_ty = Type::ty(ctx, 0);
-            Ok(as_sub_type(ctx, ty, &term_ty, &term))
+            Ok(as_sub_type(ctx, meta_arg_name, ty, &term_ty, &term))
         },
         Expr::Pair { field, head, tail } => {
-            let ident_opt = match field {
-                Some(ident) => IdentOpt::Real(ident.clone().into_inner()),
-                None => IdentOpt::fake("anon_struct_field"),
-            };
+            let head_name_name = StrName::lit(ctx, "head_name");
+            let ctx_head_name = ctx.bind(&head_name_name, &Type::string(ctx));
+            // ctx..
+            // head_name: String
 
-            let head_type_type = Type::ty(ctx, 0);
-            let tail_type_ctx = ctx.bind(&IdentOpt::fake("Head"), &head_type_type);
+            let head_type_name = StrName::lit(&ctx_head_name, "HeadType");
+            let head_type_type = Type::ty(&ctx_head_name, 0);
+            let ctx_head_type = ctx_head_name.bind(&head_type_name, &head_type_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
 
+            let tail_type_name = StrName::lit(&ctx_head_type, "TailType");
             let tail_type_type = {
-                let res_ty_ctx = tail_type_ctx.bind(&ident_opt, &Type::from_term(Term::var(&tail_type_ctx, 0, &NameOpt::fake("Head"))));
-                Type::func(&tail_type_ctx, &Type::from_term(Term::var(&tail_type_ctx, 0, &NameOpt::fake("Head"))), &Type::ty(&res_ty_ctx, 0))
+                let head_name = StrName::from_term(Term::var(&ctx_head_type, 1, &head_name_name));
+                let head_type = Type::from_term(Term::var(&ctx_head_type, 0, &head_type_name));
+                let ctx_head = ctx_head_type.bind(&head_name, &head_type);
+                // ctx..
+                // head_name: String
+                // HeadType: Type
+                // $head_name: HeadType
+                Type::func(&ctx_head_type, &head_name, &head_type, &Type::ty(&ctx_head, 0))
             };
+            let ctx_tail_type = ctx_head_type.bind(&tail_type_name, &tail_type_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
+            // TailType: ($head_name: HeadType) -> Type
 
-            let head_ctx = {
-                ctx
-                .bind(&IdentOpt::fake("Head"), &head_type_type)
-                .bind(&IdentOpt::fake("Tail"), &tail_type_type)
-            };
-
-            let head_ht = has_type(&head_ctx, &Type::from_term(Term::var(&head_ctx, 1, &NameOpt::fake("Head"))), head)?;
-
-            let tail_ctx = head_ctx.bind(&IdentOpt::fake("meta_arg"), &head_ht.meta_arg_type());
-            let tail_ht = has_type(&tail_ctx, &Type::from_term(Term::app(&tail_ctx, &Term::var(&tail_ctx, 1, &NameOpt::fake("Tail")), &head_ht.term())), tail)?;
-
-            let pair_ctx = tail_ctx.bind(&IdentOpt::fake("meta_arg"), &tail_ht.meta_arg_type());
-            let pair_tail_type_ctx = pair_ctx.bind(&ident_opt, &Type::from_term(Term::var(&pair_ctx, 3, &NameOpt::fake("Head"))));
-            let pair_tail_type = Type::from_term(Term::app(
-                &pair_tail_type_ctx,
-                &Term::var(&pair_tail_type_ctx, 3, &NameOpt::fake("Tail")),
-                &Term::var(&pair_tail_type_ctx, 0, &NameOpt::new(&ident_opt, 0)),
-            ));
-            let pair_type = {
-                Type::pair(
-                    &pair_ctx,
-                    &ident_opt,
-                    &Type::from_term(Term::var(&pair_ctx, 3, &NameOpt::fake("Head"))),
-                    &pair_tail_type,
-                )
-            };
-            let pair_term = {
-                Term::pair(
-                    &pair_ctx,
-                    &ident_opt,
-                    &head_ht.term().bump_ctx(0, &IdentOpt::fake("meta_arg"), &tail_ht.meta_arg_type()),
-                    &pair_tail_type,
-                    &tail_ht.term(),
-                )
-            };
-            let pair_ht = as_sub_type(&pair_ctx, ty, &pair_type, &pair_term);
-            let final_ctx = pair_ctx.bind(&IdentOpt::fake("meta_arg"), &pair_ht.meta_arg_type());
-            let final_term = pair_ht.term();
-
-            Ok(HasType::new_from_split_ctx(&final_ctx, 5, &final_term))
-        },
-        /*
-        Expr::Case { field, head, tail } => {
-            match ty.kind() {
-                TypeKind::Case { field: ty_field, head: head_ty, tail: tail_ty } => {
-                    if field == ty_field || field.is_none() {
-                        let head = has_type(ctx, head_ty, head)?;
-                        let tail = has_type(ctx, tail_ty, tail)?;
-                        Term::case(ctx, ty_field, head, tail)
-                    } else {
-                        let ident = field.unwrap();
-                        let ty_ident = ty_field.unwrap();
-                        let mut ty_heads = vec![(ty_ident, head_ty)];
-                        let mut remaining = tail_ty;
-                        loop {
-                            if let TypeKind::Case {
-                                field: ty_field,
-                                head: head_ty,
-                                tail: tail_ty,
-                            } = remaining.kind() {
-                                if let Some(ty_ident) = ty_field {
-                                    if ty_ident == ident {
-                                        let head = has_type(ctx, head_ty, head)?;
-                                        let mut tail_ty = tail_ty;
-                                        for (ty_ident, head_ty) in ty_heads.iter().rev() {
-                                            tail_ty = Type::case(ctx, Some(ty_ident), head_ty, tail_ty);
-                                        }
-                                        let tail = has_type(ctx, tail_ty, tail)?;
-                                        let mut term = tail.clone();
-                                        for _ in 0..ty_heads.len() {
-                                            term = Term::case_tail(ctx, term);
-                                        };
-                                        term = Term::case(ctx, Some(ident), head, term);
-                                        for (i, (ty_ident, _)) in ty_heads.iter().enumerate().rev() {
-                                            let mut head = tail.clone();
-                                            for _ in 0..i {
-                                                head = Term::case_tail(ctx, head);
-                                            }
-                                            term = Term::case(ctx, Some(ty_ident), head, term);
-                                        }
-                                        break term;
-                                    } else if !ty_heads.any(|(seen, _)| seen == ty_ident) {
-                                        ty_heads.push((ty_head, head_ty));
-                                        continue;
-                                    }
-                                }
-                            };
-                            break {
-                                let (head, head_ty) = infer_type(ctx, head)?;
-                                let tail = has_type(ctx, ty, tail)?;
-                                let term = Term::case(ctx, Some(ident), head, tail);
-                                let term = Term::case_tail(ctx, term);
-                                term
-                            };
-                        }
-                    }
+            let head_name_meta_name = StrName::lit(&ctx_tail_type, "head_name_constraint");
+            let head_name_meta_type = match field {
+                Some(ident) => {
+                    Type::equal(
+                        &ctx_tail_type,
+                        &Term::var(&ctx_tail_type, 2, &head_name_name),
+                        &Term::string_lit(&ctx_tail_type, ident),
+                    )
                 },
-            }
+                None => Type::unit(&ctx_tail_type),
+            };
+            let ctx_head_name_meta = ctx_tail_type.bind(&head_name_meta_name, &head_name_meta_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
+            // TailType: ($head_name: HeadType) -> Type
+            // head_name_constraint: HeadNameMeta
+
+            let head_ht = {
+                let head_meta_name = StrName::lit(&ctx_head_name_meta, "head_constraint");
+                let head_type = Type::from_term(Term::var(&ctx_head_name_meta, 2, &head_type_name));
+                has_type(&ctx_head_name_meta, &head_meta_name, &head_type, head)?
+            };
+
+            let head_meta_name = head_ht.meta_arg_name();
+            let head_meta_type = head_ht.meta_arg_type();
+            let head_term = head_ht.term();
+            let ctx_head_meta = ctx_head_name_meta.bind(&head_meta_name, &head_meta_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
+            // TailType: ($head_name: HeadType) -> Type
+            // head_name_constraint: HeadNameMeta
+            // head_constraint: HeadMeta
+
+            let tail_ht = {
+                let tail_meta_name = StrName::lit(&ctx_head_meta, "tail_constraint");
+                let tail_type = Type::from_term(Term::app(
+                    &ctx_head_meta,
+                    &Term::var(&ctx_head_meta, 2, &tail_type_name),
+                    &head_term,
+                ));
+                has_type(&ctx_head_meta, &tail_meta_name, &tail_type, tail)?
+            };
+
+            let tail_meta_name = tail_ht.meta_arg_name();
+            let tail_meta_type = tail_ht.meta_arg_type();
+            let tail_term = tail_ht.term();
+            let ctx_tail_meta = ctx_head_meta.bind(&tail_meta_name, &tail_meta_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
+            // TailType: ($head_name: HeadType) -> Type
+            // head_name_constraint: HeadNameMeta
+            // head_constraint: HeadMeta
+            // tail_constraint: TailMeta
+
+            let pair_ht = {
+                let pair_meta_name = StrName::lit(&ctx_head_meta, "pair_subtype_constraint");
+                let head_name = StrName::from_term(Term::var(&ctx_tail_meta, 5, &head_name_name));
+                let head_type = Type::from_term(Term::var(&ctx_tail_meta, 4, &head_type_name));
+                let ctx_head = ctx_tail_meta.bind(&head_name, &head_type);
+                let tail_type = Type::from_term(Term::app(
+                    &ctx_head,
+                    &Term::var(&ctx_head, 4, &tail_type_name),
+                    &Term::var(&ctx_head, 0, &head_name),
+                ));
+                let pair_type = Type::pair(&ctx_tail_meta, &head_name, &head_type, &tail_type);
+                let pair_term = Term::pair(&ctx_tail_meta, &head_name, &head_term, &tail_type, &tail_term);
+                as_sub_type(&ctx_tail_meta, &pair_meta_name, ty, &pair_type, &pair_term)
+            };
+
+            let pair_meta_name = pair_ht.meta_arg_name();
+            let pair_meta_type = pair_ht.meta_arg_type();
+            let pair_term = pair_ht.term();
+            let pair_meta_ctx = ctx_tail_meta.bind(&pair_meta_name, &pair_meta_type);
+            // ctx..
+            // head_name: String
+            // HeadType: Type
+            // TailType: ($head_name: HeadType) -> Type
+            // head_name_constraint: HeadNameMetaType
+            // head_constraint: HeadMetaType
+            // tail_constraint: TailMetaType
+            // pair_subtype_constraint: PairMetaType
+
+            Ok(HasType::new_from_split_ctx(&pair_meta_ctx, meta_arg_name, 7, &pair_term))
         },
-        */
         Expr::App { func, arg } => {
-            // G |- Type: Type
-            let arg_type_type = Type::ty(ctx, 0);
+            let arg_name_name = StrName::lit(ctx, "arg_name");
+            let ctx_arg_name = ctx.bind(&arg_name_name, &Type::string(ctx));
+            // ctx..
+            // arg_name: String
 
-            // G, Arg: Type
-            let res_type_ctx = ctx.bind(&IdentOpt::fake("Arg"), &arg_type_type);
-            // G, Arg: Type, arg: Arg
-            let res_type_res_ctx = res_type_ctx.bind(&IdentOpt::fake("arg"), &Type::from_term(Term::var(&res_type_ctx, 0, &NameOpt::fake("Arg"))));
-            // G, Arg: Type |- (Arg -> Type): Type
-            let res_type_type = Type::func(
-                &res_type_ctx,
-                &Type::from_term(Term::var(&res_type_ctx, 0, &NameOpt::fake("Arg"))),
-                &Type::ty(&res_type_res_ctx, 0),
-            );
+            let arg_type_name = StrName::lit(&ctx_arg_name, "ArgType");
+            let arg_type_type = Type::ty(&ctx_arg_name, 0);
+            let ctx_arg_type = ctx_arg_name.bind(&arg_type_name, &arg_type_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
 
-            // G, Arg: Type, Res: Arg -> Type
-            let func_ctx = res_type_ctx.bind(&IdentOpt::fake("Res"), &res_type_type);
+            let res_type_name = StrName::lit(&ctx_arg_type, "ResType");
+            let res_type_type = {
+                let arg_name = StrName::from_term(Term::var(&ctx_arg_type, 1, &arg_name_name));
+                let arg_type = Type::from_term(Term::var(&ctx_arg_type, 0, &arg_type_name));
+                let ctx_arg = ctx_arg_type.bind(&arg_name, &arg_type);
+                Type::func(&ctx_arg_type, &arg_name, &arg_type, &Type::ty(&ctx_arg, 0))
+            };
+            let ctx_res_type = ctx_arg_type.bind(&res_type_name, &res_type_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
 
-            // G, Arg: Type, Res: Arg -> Type |- Arg: Type
-            let arg_type = Type::from_term(Term::var(&func_ctx, 1, &NameOpt::fake("Arg")));
-            // G, Arg: Type, Res: Arg -> Type, arg: Arg
-            let res_type_ctx = func_ctx.bind(&IdentOpt::fake("arg"), &arg_type);
-            // G, Arg: Type, Res: Arg -> Type, arg: Arg |- Res(arg): Type
-            let res_type = Type::from_term(Term::app(
-                &res_type_ctx,
-                &Term::var(&res_type_ctx, 1, &NameOpt::fake("Res")),
-                &Term::var(&res_type_ctx, 0, &NameOpt::fake("arg")),
-            ));
+            let func_meta_name = StrName::lit(&ctx_res_type, "func_constraint");
+            let func_ht = {
+                let arg_name = StrName::from_term(Term::var(&ctx_res_type, 2, &arg_name_name));
+                let arg_type = Type::from_term(Term::var(&ctx_res_type, 1, &arg_type_name));
+                let ctx_arg = ctx_arg_type.bind(&arg_name, &arg_type);
+                let res_type = Type::from_term(Term::app(
+                    &ctx_arg,
+                    &Term::var(&ctx_arg, 1, &res_type_name),
+                    &Term::var(&ctx_arg, 0, &arg_name),
+                ));
+                let func_type = Type::func(&ctx_res_type, &arg_name, &arg_type, &res_type);
+                has_type(&ctx_res_type, &func_meta_name, &func_type, func)?
+            };
+            let func_meta_name = func_ht.meta_arg_name();
+            let func_meta_type = func_ht.meta_arg_type();
+            let func_term = func_ht.term();
+            let ctx_func_meta = ctx_res_type.bind(&func_meta_name, &func_meta_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
+            // func_constraint: FuncMeta
 
-            // G, Arg: Type, Res: Arg -> Type |- ((arg: Arg) -> Res(arg)): Type
-            let func_type = Type::func(&func_ctx, &arg_type, &res_type);
+            let arg_meta_name = StrName::lit(&ctx_func_meta, "arg_constraint");
+            let arg_ht = {
+                let arg_type = Type::from_term(Term::var(&ctx_func_meta, 2, &arg_type_name));
+                has_type(&ctx_func_meta, &arg_meta_name, &arg_type, arg)?
+            };
+            let arg_meta_name = arg_ht.meta_arg_name();
+            let arg_meta_type = arg_ht.meta_arg_type();
+            let arg_term = arg_ht.term();
+            let ctx_arg_meta = ctx_func_meta.bind(&arg_meta_name, &arg_meta_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
+            // func_constraint: FuncMeta
+            // arg_constraint: ArgMeta
 
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM |- func : (arg: Arg) -> Res(arg)
-            let func_ht = has_type(&func_ctx, &func_type, func)?;
+            let app_ht = {
+                let app_meta_name = StrName::lit(&ctx_arg_meta, "app_subtype_constraint");
+                let app_type = Type::from_term(Term::app(
+                    &ctx_arg_meta,
+                    &Term::var(&ctx_arg_meta, 2, &res_type_name),
+                    &arg_term,
+                ));
+                let app_term = Term::app(
+                    &ctx_arg_meta,
+                    &func_term,
+                    &arg_term,
+                );
+                as_sub_type(&ctx_arg_meta, &app_meta_name, ty, &app_type, &app_term)
+            };
+            let app_meta_name = app_ht.meta_arg_name();
+            let app_meta_type = app_ht.meta_arg_type();
+            let app_term = app_ht.term();
+            let ctx_app_meta = ctx_arg_meta.bind(&app_meta_name, &app_meta_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
+            // func_constraint: FuncMeta
+            // arg_constraint: ArgMeta
+            // app_subtype_constraint: AppMeta
 
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM
-            let arg_ctx = func_ctx.bind(&IdentOpt::fake("meta_arg"), &func_ht.meta_arg_type());
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM |- Arg: Type
-            let arg_type = Type::from_term(Term::var(&arg_ctx, 2, &NameOpt::fake("Arg")));
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM |- arg: Arg
-            let arg_ht = has_type(&arg_ctx, &arg_type, arg)?;
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM |- func : (arg: Arg) -> Res(arg)
-            let func_term = func_ht.term().bump_ctx(0, &IdentOpt::fake("meta_arg"), &arg_ht.meta_arg_type());
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM
-            let app_ctx = arg_ctx.bind(&IdentOpt::fake("meta_arg"), &arg_ht.meta_arg_type());
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM |- func(arg) : Res(arg)
-            let app_term = Term::app(&app_ctx, &func_term, &arg_ht.term());
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM |- Res(arg): Type
-            let app_type = Type::from_term(Term::app(
-                &app_ctx,
-                &Term::var(&app_ctx, 2, &NameOpt::fake("Res")),
-                &arg_ht.term(),
-            ));
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM, app_m: AppM |- app : T
-            let app_ht = as_sub_type(&app_ctx, ty, &app_type, &app_term);
-
-            // G, Arg: Type, Res: Arg -> Type, func_m: FuncM, arg_m: ArgM, app_m: AppM
-            let final_ctx = app_ctx.bind(&IdentOpt::fake("meta_arg"), &app_ht.meta_arg_type());
-
-            Ok(HasType::new_from_split_ctx(&final_ctx, 5, &app_ht.term()))
+            Ok(HasType::new_from_split_ctx(&ctx_app_meta, meta_arg_name, 6, &app_term))
         },
         Expr::Func { pat, body } => {
-            // G |- Arg: Type
-            let arg_type = Type::ty(ctx, 0);
+            let arg_name_name = StrName::lit(ctx, "arg_name");
+            let ctx_arg_name = ctx.bind(&arg_name_name, &Type::string(ctx));
+            // ctx..
+            // arg_name: String
 
-            // G, Arg: Type
-            let res_type_ctx = ctx.bind(&IdentOpt::fake("Arg"), &arg_type);
+            let arg_type_name = StrName::lit(&ctx_arg_name, "ArgType");
+            let arg_type_type = Type::ty(&ctx_arg_name, 0);
+            let ctx_arg_type = ctx_arg_name.bind(&arg_type_name, &arg_type_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
 
-            // G, Arg: Type, arg: Arg
-            let res_type_res_type_ctx = res_type_ctx.bind(
-                &IdentOpt::fake("arg"),
-                &Type::from_term(Term::var(&res_type_ctx, 0, &NameOpt::fake("Arg"))),
-            );
-
-            // G, Arg: Type |- Res : Arg -> Type
-            let res_type = Type::func(
-                &res_type_ctx,
-                &Type::from_term(Term::var(&res_type_ctx, 0, &NameOpt::fake("Arg"))),
-                &Type::ty(&res_type_res_type_ctx, 0),
-            );
-
-            // G, Arg: Type, Res: Arg -> Type
-            let outer_ctx = res_type_ctx.bind(&IdentOpt::fake("Res"), &res_type);
-
-            // G, Arg: Type, Res: Arg -> Type, arg: Arg
-            let pat_ctx = outer_ctx.bind(
-                &IdentOpt::fake("arg"),
-                &Type::from_term(Term::var(&outer_ctx, 1, &NameOpt::fake("Arg"))),
-            );
-
-            let pat_mp = check_pat(
-                &pat_ctx,
-                &Type::from_term(Term::var(&pat_ctx, 2, &NameOpt::fake("Arg"))),
-                &Term::var(&pat_ctx, 0, &NameOpt::fake("arg")),
-                pat,
-            )?;
-
-            let ext_ctx = pat_mp.ext_ctx();
-
-            let body_type = {
-                Type::from_term(Term::app(
-                    &pat_ctx,
-                    &Term::var(&pat_ctx, 1, &NameOpt::fake("Res")),
-                    &Term::var(&pat_ctx, 0, &NameOpt::fake("arg")),
-                ))
-                .bump_into_ctx(&pat_ctx, &ext_ctx)
+            let res_type_name = StrName::lit(&ctx_arg_type, "ResType");
+            let res_type_type = {
+                let arg_name = StrName::from_term(Term::var(&ctx_arg_type, 1, &arg_name_name));
+                let arg_type = Type::from_term(Term::var(&ctx_arg_type, 0, &arg_type_name));
+                let ctx_arg = ctx_arg_type.bind(&arg_name, &arg_type);
+                Type::func(&ctx_arg_type, &arg_name, &arg_type, &Type::ty(&ctx_arg, 0))
             };
+            let ctx_res_type = ctx_arg_type.bind(&res_type_name, &res_type_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
 
-            let body_ht = pat_mp.construct(has_type(&ext_ctx, &body_type, body)?);
-
-            let pat_meta_shifted = Type::func(
-                &outer_ctx,
-                &Type::from_term(Term::var(&outer_ctx, 1, &NameOpt::fake("Arg"))),
-                &pat_mp.meta_arg_type(),
-            );
-
-            let outer_ctx_with_pat_meta = outer_ctx.bind(&IdentOpt::fake("meta_arg"), &pat_meta_shifted);
-            let pat_ctx_with_pat_meta = {
-                outer_ctx_with_pat_meta
-                .bind(&IdentOpt::fake("arg"), &Type::from_term(
-                    Term::var(&outer_ctx_with_pat_meta, 2, &NameOpt::fake("Arg"))
-                ))
+            let arg_pht = {
+                let arg_meta_name = StrName::lit(&ctx_res_type, "function_arg_subtype_constraint");
+                let arg_name = StrName::from_term(Term::var(&ctx_res_type, 2, &arg_name_name));
+                let arg_type = Type::from_term(Term::var(&ctx_res_type, 1, &arg_type_name));
+                check_pat(&ctx_res_type, &arg_meta_name, &arg_name, &arg_type, pat)?
             };
+            let arg_ext_ctx = arg_pht.ext_ctx();
+            let arg_func_arg = arg_pht.func_arg();
 
-            let body_meta_shifted = Type::func(
-                &outer_ctx_with_pat_meta,
-                &Type::from_term(Term::var(&outer_ctx_with_pat_meta, 2, &NameOpt::fake("Arg"))),
+            let res_type = Type::from_term(Term::app(
+                &arg_ext_ctx,
                 &{
-                    body_ht
-                    .meta_arg_type()
-                    .bump_ctx(2, &IdentOpt::fake("meta_arg"), &pat_meta_shifted)
-                    .substitute(0, &IdentOpt::fake("meta_arg"), &Term::app(
-                        &pat_ctx_with_pat_meta,
-                        &Term::var(&pat_ctx_with_pat_meta, 1, &NameOpt::fake("meta_arg")),
-                        &Term::var(&pat_ctx_with_pat_meta, 0, &NameOpt::fake("arg")),
-                    ))
+                    Term::var(&ctx_res_type, 0, &res_type_name)
+                    .bump_into_ctx(&ctx_res_type, &arg_ext_ctx)
                 },
-            );
+                &arg_func_arg,
+            ));
+            let res_meta_name = StrName::lit(&arg_ext_ctx, "function_body_subtype_constraint");
+            let res_ht = has_type(&arg_ext_ctx, &res_meta_name, &res_type, body)?;
+            let constructed_ht = arg_pht.construct(res_ht);
+            let constructed_meta_name = constructed_ht.meta_arg_name();
+            let constructed_meta_type = constructed_ht.meta_arg_type();
+            let constructed_term = constructed_ht.term();
+            let ctx_constructed_meta = ctx_res_type.bind(&constructed_meta_name, &constructed_meta_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
+            // _: ConstructedMeta
 
-            let outer_ctx_with_body_meta = outer_ctx_with_pat_meta.bind(&IdentOpt::fake("meta_arg"), &body_meta_shifted);
-            let pat_ctx_with_body_meta = {
-                outer_ctx_with_body_meta
-                .bind(&IdentOpt::fake("arg"), &Type::from_term(
-                    Term::var(&outer_ctx_with_body_meta, 3, &NameOpt::fake("Arg"))
-                ))
+            let func_ht = {
+                let func_meta_name = StrName::lit(&ctx_constructed_meta, "function_subtype_constraint");
+                let arg_name = StrName::from_term(Term::var(&ctx_constructed_meta, 3, &arg_name_name));
+                let arg_type = Type::from_term(Term::var(&ctx_constructed_meta, 2, &arg_type_name));
+                let ctx_arg = ctx_constructed_meta.bind(&arg_name, &arg_type);
+                let func_type = Type::func(
+                    &ctx_constructed_meta,
+                    &arg_name,
+                    &arg_type,
+                    &Type::from_term(Term::app(
+                        &ctx_arg,
+                        &Term::var(&ctx_arg, 2, &res_type_name),
+                        &Term::var(&ctx_arg, 0, &arg_name),
+                    )),
+                );
+                as_sub_type(&ctx_constructed_meta, &func_meta_name, ty, &func_type, &constructed_term)
             };
+            let func_meta_name = func_ht.meta_arg_name();
+            let func_meta_type = func_ht.meta_arg_type();
+            let func_term = func_ht.term();
+            let ctx_func_meta = ctx_constructed_meta.bind(&func_meta_name, &func_meta_type);
+            // ctx..
+            // arg_name: String
+            // ArgType: Type
+            // ResType: ($arg_name: ArgType) -> Type
+            // _: ConstructedMeta
+            // function_subtype_constraint: FuncMeta
 
-            let res = {
-                body_ht
-                .term()
-                .bump_ctx(3, &IdentOpt::fake("meta_arg"), &pat_meta_shifted)
-                .substitute(1, &IdentOpt::fake("meta_arg"), &Term::app(
-                    &pat_ctx_with_pat_meta,
-                    &Term::var(&pat_ctx_with_pat_meta, 1, &NameOpt::fake("meta_arg")),
-                    &Term::var(&pat_ctx_with_pat_meta, 0, &NameOpt::fake("arg")),
-                ))
-                .bump_ctx(2, &IdentOpt::fake("meta_arg"), &body_meta_shifted)
-                .substitute(0, &IdentOpt::fake("meta_arg"), &Term::app(
-                    &pat_ctx_with_body_meta,
-                    &Term::var(&pat_ctx_with_body_meta, 1, &NameOpt::fake("meta_arg")),
-                    &Term::var(&pat_ctx_with_body_meta, 0, &NameOpt::fake("arg")),
-                ))
-            };
-
-            let func = Term::func(
-                &outer_ctx_with_body_meta,
-                &Type::from_term(Term::var(&outer_ctx_with_body_meta, 3, &NameOpt::fake("Arg"))),
-                &res,
-            );
-
-            let func_type = Type::func(
-                &outer_ctx_with_body_meta,
-                &Type::from_term(Term::var(&outer_ctx_with_body_meta, 3, &NameOpt::fake("Arg"))),
-                &Type::from_term(Term::app(
-                    &pat_ctx_with_body_meta,
-                    &Term::var(&pat_ctx_with_body_meta, 3, &NameOpt::fake("Res")),
-                    &Term::var(&pat_ctx_with_body_meta, 0, &NameOpt::fake("arg")),
-                )),
-            );
-
-            let expected_type = ty.bump_into_ctx(ctx, &outer_ctx_with_body_meta);
-            let func_ht = as_sub_type(&outer_ctx_with_body_meta, &expected_type, &func_type, &func);
-
-            let final_ctx = outer_ctx_with_body_meta.bind(&IdentOpt::fake("meta_arg"), &func_ht.meta_arg_type());
-
-            Ok(HasType::new_from_split_ctx(&final_ctx, 5, &func_ht.term()))
+            Ok(HasType::new_from_split_ctx(&ctx_func_meta, meta_arg_name, 5, &func_term))
         },
         _ => unimplemented!(),
     }
 }
 
+pub struct PatHasType {
+    ext_ctx: Ctx,
+    func_arg: Term,
+    constructor: Box<Fn(HasType) -> HasType>,
+}
+
+impl PatHasType {
+    pub fn ext_ctx(&self) -> Ctx {
+        self.ext_ctx.clone()
+    }
+
+    pub fn func_arg(&self) -> Term {
+        self.func_arg.clone()
+    }
+    
+    pub fn construct(&self, ht: HasType) -> HasType {
+        (self.constructor)(ht)
+    }
+}
+
+pub fn check_pat(
+    ctx: &Ctx,
+    meta_arg_name: &StrName,
+    arg_name: &StrName,
+    ty: &Type,
+    pat: &Expr,
+) -> Result<PatHasType, Error> {
+    assert_eq!(*ctx, ty.get_ctx());
+    match pat {
+        Expr::Unit => {
+            let arg_meta_name = StrName::lit(&ctx, "unit_arg_subtype_constraint");
+            let arg_meta_type = Type::equal(
+                ctx,
+                &ty.into_term(),
+                &Term::unit_type(ctx),
+            );
+            let ctx_arg_meta = ctx.bind(&arg_meta_name, &arg_meta_type);
+            // ctx..
+            // unit_arg_subtype_constraint: Ty #= #()
+
+            let ctx_arg = ctx_arg_meta.bind(arg_name, ty);
+            // ctx..
+            // unit_arg_subtype_constraint: Ty #= #()
+            // $arg_name: Ty
+
+            let ctx_unit_arg = ctx_arg.bind(arg_name, &Type::unit(&ctx_arg));
+            // ctx..
+            // unit_arg_subtype_constraint: Ty #= #()
+            // $arg_name: Ty
+            // $arg_name: #()
+
+            let ext_ctx = ctx_unit_arg.clone();
+            let func_arg = Term::var(&ext_ctx, 1, arg_name);
+            let meta_arg_name = meta_arg_name.clone();
+            let arg_name = arg_name.clone();
+            let ty = ty.clone();
+            let constructor = Box::new(move |res_ht: HasType| {
+                let res_meta_name = res_ht.meta_arg_name();
+                let res_meta_type = res_ht.meta_arg_type();
+                let res_term = res_ht.term();
+
+                let lifted_res_meta_name = unwrap!(res_meta_name.try_lift_out_of_ctx(0, 2));
+                let lifted_res_meta_type = Type::func(
+                    &ctx_arg_meta,
+                    &arg_name,
+                    &ty,
+                    &Type::from_term(Term::app(
+                        &ctx_arg,
+                        &Term::func(
+                            &ctx_arg,
+                            &arg_name,
+                            &Type::unit(&ctx_arg),
+                            &res_meta_type.into_term(),
+                        ),
+                        &transport(
+                            &ctx_arg,
+                            &Term::var(&ctx_arg, 1, &arg_meta_name),
+                            &Term::var(&ctx_arg, 0, &arg_name),
+                        ),
+                    )),
+                );
+                let ctx_lifted_res_meta = ctx_arg_meta.bind(&lifted_res_meta_name, &lifted_res_meta_type);
+                // ctx..
+                // unit_arg_subtype_constraint: Ty #= #()
+                // res_subtype_constraint: Ty -> ResMeta
+
+                let func_term = {
+                    let ctx_arg = ctx_arg.bump(1, &lifted_res_meta_name, &lifted_res_meta_type);
+                    // ctx..
+                    // unit_arg_subtype_constraint: Ty #= #()
+                    // res_meta: {$arg_name: ArgType} -> ResMeta
+                    // $arg_name: Ty
+
+                    let ctx_unit_arg = ctx_unit_arg.bump(2, &lifted_res_meta_name, &lifted_res_meta_type);
+                    // ctx..
+                    // unit_arg_subtype_constraint: Ty #= #()
+                    // res_meta: {$arg_name: ArgType} -> ResMeta
+                    // $arg_name: Ty
+                    // $arg_name: #()
+
+                    let lifted_res_term = {
+                        res_term
+                        .bump_ctx(3, &lifted_res_meta_name, &lifted_res_meta_type)
+                        .substitute(
+                            0, 
+                            &res_meta_name.bump_ctx(
+                                2,
+                                &lifted_res_meta_name,
+                                &lifted_res_meta_type,
+                            ),
+                            &Term::app(
+                                &ctx_unit_arg,
+                                &Term::var(&ctx_unit_arg, 2, &lifted_res_meta_name),
+                                &Term::var(&ctx_unit_arg, 1, &arg_name),
+                            ),
+                        )
+                    };
+                    Term::func(
+                        &ctx_lifted_res_meta,
+                        &arg_name,
+                        &ty,
+                        &Term::app(
+                            &ctx_arg,
+                            &Term::func(
+                                &ctx_arg,
+                                &arg_name,
+                                &Type::unit(&ctx_arg),
+                                &lifted_res_term,
+                            ),
+                            &transport(
+                                &ctx_arg,
+                                &Term::var(&ctx_arg, 2, &arg_meta_name),
+                                &Term::var(&ctx_arg, 0, &arg_name),
+                            ),
+                        )
+                    )
+                };
+
+                HasType::new_from_split_ctx(&ctx_lifted_res_meta, &meta_arg_name, 2, &func_term)
+            });
+
+            Ok(PatHasType { ext_ctx, func_arg, constructor })
+        },
+        _ => unimplemented!(),
+    }
+}
+
+
+/*
 pub struct MetaPat {
     meta_arg_type: Type,
     ext_ctx: Ctx,
@@ -469,8 +593,8 @@ impl MetaPat {
 // term. The MetaPat which is returned has a meta_arg_type under the original context, a
 // constructor which embeds a meta-term under a pile of eliminators, and an extended context which
 // is an extension of the original context, includes the meta_arg_type, and is the context under
-// the eliminators. The constructor takes a meta-term under the extended context and returns a
-// meta-term under the original context extended with just the pattern's meta_arg_type.
+// the eliminators. The constructor takes a meta-term (HasType) under the extended context and
+// returns a meta-term under the original context extended with just the pattern's meta_arg_type.
 pub fn check_pat(
     ctx: &Ctx,
     elim_type: &Type,
@@ -573,18 +697,23 @@ pub fn check_pat(
         },
     }
 }
+*/
 
 fn as_sub_type(
     ctx: &Ctx,
+    meta_arg_name: &StrName,
     hi_type: &Type,
     lo_type: &Type,
     term: &Term,
 ) -> HasType {
-    assert_eq!(*ctx, hi_type.get_ctx());
-    assert_eq!(*ctx, lo_type.get_ctx());
-    assert_eq!(term.get_type(), *lo_type);
+    let meta_arg_name = meta_arg_name.bump_into_ctx(&meta_arg_name.get_ctx(), ctx);
+    let hi_type = hi_type.bump_into_ctx(&hi_type.get_ctx(), ctx);
+    let lo_type = lo_type.bump_into_ctx(&lo_type.get_ctx(), ctx);
+
+    assert_eq!(term.get_type(), lo_type);
     if hi_type == lo_type {
         return HasType {
+            meta_arg_name: meta_arg_name.clone(),
             meta_arg_type: Type::unit(ctx),
             term: term.clone(),
         };
@@ -593,13 +722,13 @@ fn as_sub_type(
     let hi_type = hi_type.into_term();
     let lo_type = lo_type.into_term();
     let meta_arg_type = Type::equal(ctx, &lo_type, &hi_type);
-    let sub_ctx = Ctx::bind(ctx, &IdentOpt::fake("meta_arg"), &meta_arg_type);
+    let sub_ctx = ctx.bind(&meta_arg_name, &meta_arg_type);
     let term = transport(
         &sub_ctx,
-        &Term::var(&sub_ctx, 0, &NameOpt::fake("meta_arg")),
-        &term.bump_ctx(0, &IdentOpt::fake("meta_arg"), &meta_arg_type),
+        &Term::var(&sub_ctx, 0, &meta_arg_name),
+        &term.bump_ctx(0, &meta_arg_name, &meta_arg_type),
     );
-    HasType::new(ctx, &meta_arg_type, &term)
+    HasType::new(ctx, &meta_arg_name, &meta_arg_type, &term)
 }
 
 fn transport(ctx: &Ctx, equality: &Term, term: &Term) -> Term {
@@ -613,33 +742,35 @@ fn transport(ctx: &Ctx, equality: &Term, term: &Term) -> Term {
 
     assert_eq!(lo_type, term.get_type().into_term());
 
-    let target_type_ctx = ctx;
-    let target_type_ctx = target_type_ctx.bind(&IdentOpt::fake("LoType"), &lo_type.get_type());
-    let target_type_ctx = target_type_ctx.bind(&IdentOpt::fake("HiType"), &hi_type.get_type().bump_ctx(0, &IdentOpt::fake("LoType"), &lo_type.get_type()));
-    let target_type_ctx = target_type_ctx.bind(&IdentOpt::fake("types_equal"), &Type::equal(
-        &target_type_ctx,
-        &Term::var(&target_type_ctx, 1, &NameOpt::fake("LoType")),
-        &Term::var(&target_type_ctx, 0, &NameOpt::fake("HiType")),
+    let arg_name = StrName::lit(&ctx, "transport_arg");
+    let lo_type_name = StrName::lit(ctx, "LoType");
+    let ctx_lo_type = ctx.bind(&lo_type_name, &lo_type.get_type());
+    let hi_type_name = StrName::lit(&ctx_lo_type, "HiType");
+    let ctx_hi_type = ctx_lo_type.bind(&hi_type_name, &hi_type.get_type().bump_into_ctx(ctx, &ctx_lo_type));
+    let types_equal_name = StrName::lit(&ctx_hi_type, "types_equal");
+    let ctx_types_equal = ctx_hi_type.bind(&types_equal_name, &Type::equal(
+        &ctx_hi_type,
+        &Term::var(&ctx_hi_type, 1, &lo_type_name),
+        &Term::var(&ctx_hi_type, 0, &hi_type_name),
     ));
-    let target_type_res_ctx = {
-        target_type_ctx
-        .bind(&IdentOpt::fake("transport_arg"), &Type::from_term(Term::var(&target_type_ctx, 2, &NameOpt::fake("LoType"))))
+    let target_type = {
+        let arg_type = Type::from_term(Term::var(&ctx_types_equal, 2, &lo_type_name));
+        let ctx_arg = ctx_types_equal.bind(&arg_name, &arg_type);
+        Type::func(&ctx_types_equal, &arg_name, &arg_type, &Type::from_term(Term::var(&ctx_arg, 2, &hi_type_name)))
     };
-    let target_type = Type::func(
-        &target_type_ctx,
-        &Type::from_term(Term::var(&target_type_ctx, 2, &NameOpt::fake("LoType"))),
-        &Type::from_term(Term::var(&target_type_res_ctx, 2, &NameOpt::fake("HiType"))),
-    );
 
-    let target_ctx = ctx;
-    let target_ctx = target_ctx.bind(&IdentOpt::fake("EqType"), &lo_type.get_type());
-    let arg_type = Type::from_term(Term::var(&target_ctx, 0, &NameOpt::fake("EqType")));
-    let target_res_ctx = target_ctx.bind(&IdentOpt::fake("transport_arg"), &arg_type);
-    let target = Term::func(&target_ctx, &arg_type, &Term::var(&target_res_ctx, 0, &NameOpt::fake("transport_arg")));
+    let eq_type_name = StrName::lit(ctx, "EqType");
+    let ctx_eq_type = ctx.bind(&eq_type_name, &lo_type.get_type());
+    let target = {
+        let arg_type = Type::from_term(Term::var(&ctx_eq_type, 0, &eq_type_name));
+        let ctx_arg = ctx_eq_type.bind(&arg_name, &arg_type);
+        Term::func(&ctx_eq_type, &arg_name, &arg_type, &Term::var(&ctx_arg, 0, &arg_name))
+    };
 
-    Term::app(ctx,
+    Term::app(
+        ctx,
         &Term::j(ctx, &target_type, &target, &equality),
-        &term,
+        term,
     )
 }
 

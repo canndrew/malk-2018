@@ -1,5 +1,4 @@
 use super::*;
-use syntax::{NameOpt, IdentOpt};
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub enum Precedence {
@@ -8,6 +7,22 @@ pub enum Precedence {
     App = 2,
     Equality = 3,
     Func = 4,
+}
+
+pub fn debug_term(term: &Term) -> String {
+    use std::fmt::Write;
+    struct Ass<'a> {
+        term: &'a Term,
+    }
+    impl<'a> Display for Ass<'a> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            render_term(self.term, f, 0, Precedence::Func)
+        }
+    }
+
+    let mut ret = String::new();
+    write!(&mut ret, "{}", Ass { term });
+    ret
 }
 
 fn render_indent(f: &mut fmt::Formatter, indent: u32) -> fmt::Result {
@@ -24,6 +39,7 @@ fn term_precedence(term: &Term) -> Precedence {
         TermKind::UnitType |
         TermKind::NeverType |
         TermKind::StringType |
+        TermKind::StringLit { .. } |
         TermKind::PairType { .. } => {
             Precedence::Enclosed
         },
@@ -50,7 +66,7 @@ fn term_precedence(term: &Term) -> Precedence {
         TermKind::J { .. } |
         TermKind::Abort { .. } |
         TermKind::PairSplit { .. } => {
-            unimplemented!()
+            Precedence::Func
         },
     }
 }
@@ -100,24 +116,22 @@ pub fn render_type(
         TypeKind::String => {
             write!(f, "String")?;
         },
-        TypeKind::Pair { head_ident_opt, head, tail } => {
+        TypeKind::Pair { head_name, head, tail } => {
             writeln!(f, "#(")?;
-            let mut ident_opt = head_ident_opt.clone();
+            let mut head_name = head_name.clone();
             let mut head = head.clone();
             let mut tail = tail.clone();
             loop {
                 render_indent(f, indent + 1)?;
-                match ident_opt {
-                    IdentOpt::Real(ident) => write!(f, "{}: ", ident)?,
-                    IdentOpt::Fake(s) => write!(f, "<{}>: ", s)?,
-                }
+                render_name(f, &head_name, indent)?;
+                write!(f, ": ")?;
                 render_type(&head, f, indent + 1, Precedence::Func)?;
                 writeln!(f, ",")?;
                 match tail.kind() {
-                    TypeKind::Pair { head_ident_opt, head: new_head, tail: new_tail } => {
-                        ident_opt = head_ident_opt.clone();
-                        head = new_head.clone();
-                        tail = new_tail.clone();
+                    TypeKind::Pair { head_name: next_head_name, head: next_head, tail: next_tail } => {
+                        head_name = next_head_name.clone();
+                        head = next_head.clone();
+                        tail = next_tail.clone();
                     },
                     TypeKind::Unit => break,
                     _ => {
@@ -129,12 +143,15 @@ pub fn render_type(
                     },
                 }
             }
+            render_indent(f, indent)?;
             write!(f, ")")?;
         },
-        TypeKind::Func { arg, res } => {
-            write!(f, "_: ")?;
-            render_type(arg, f, indent, Precedence::Enclosed)?;
-            write!(f, " -> ")?;
+        TypeKind::Func { arg_name, arg, res } => {
+            write!(f, "{{")?;
+            render_name(f, arg_name, indent)?;
+            write!(f, ": ")?;
+            render_type(arg, f, indent, Precedence::Func)?;
+            write!(f, "}} -> ")?;
             render_type(res, f, indent, Precedence::Func)?;
         },
     }
@@ -168,11 +185,15 @@ pub fn render_term(
         TermKind::FuncType { .. } => {
             render_type(&Type::from_term(term.clone()), f, indent, Precedence::Func)?;
         },
-        TermKind::Var { index, name_opt } => {
-            match name_opt {
-                NameOpt::Real(name) => write!(f, "{}", name)?,
-                NameOpt::Fake(s) => write!(f, "<↑{} {}>", index, s)?,
+        TermKind::Var { index, name } => {
+            let bumps = term.get_ctx().lookup_bumps(*index, name);
+            for _ in 0..bumps {
+                write!(f, "^")?;
             }
+            render_name(f, name, indent)?;
+        },
+        TermKind::StringLit { ident } => {
+            write!(f, "\"{}\"", ident)?;
         },
         TermKind::Refl { x } => {
             render_term(x, f, indent, Precedence::App)?;
@@ -182,24 +203,22 @@ pub fn render_term(
         TermKind::Unit => {
             write!(f, "()")?;
         },
-        TermKind::Pair { head_ident_opt, head, tail, .. } => {
+        TermKind::Pair { head_name, head, tail, .. } => {
             writeln!(f, "(")?;
-            let mut ident_opt = head_ident_opt.clone();
+            let mut head_name = head_name.clone();
             let mut head = head.clone();
             let mut tail = tail.clone();
             loop {
                 render_indent(f, indent + 1)?;
-                match ident_opt {
-                    IdentOpt::Real(ident) => write!(f, "{}: ", ident)?,
-                    IdentOpt::Fake(s) => write!(f, "<{}>: ", s)?,
-                }
+                render_name(f, &head_name, indent)?;
+                write!(f, " = ")?;
                 render_term(&head, f, indent + 1, Precedence::Func)?;
                 writeln!(f, ",")?;
                 match tail.kind() {
-                    TermKind::Pair { head_ident_opt, head: new_head, tail: new_tail, .. } => {
-                        ident_opt = head_ident_opt.clone();
-                        head = new_head.clone();
-                        tail = new_tail.clone();
+                    TermKind::Pair { head_name: next_head_name, head: next_head, tail: next_tail, .. } => {
+                        head_name = next_head_name.clone();
+                        head = next_head.clone();
+                        tail = next_tail.clone();
                     },
                     TermKind::Unit => break,
                     _ => {
@@ -211,10 +230,12 @@ pub fn render_term(
                     },
                 }
             }
+            render_indent(f, indent)?;
             write!(f, ")")?;
         },
-        TermKind::Func { arg_type, res } => {
-            write!(f, "_: ")?;
+        TermKind::Func { arg_name, arg_type, res } => {
+            render_name(f, arg_name, indent)?;
+            write!(f, ": ")?;
             render_type(arg_type, f, indent, Precedence::Enclosed)?;
             write!(f, " => ")?;
             render_term(res, f, indent, Precedence::Func)?;
@@ -224,10 +245,39 @@ pub fn render_term(
             render_term(arg, f, indent, Precedence::Enclosed)?;
         },
 
+        /*
+        TermKind::J { target_type, target, elim } => {
+            write!(f, "(")?;
+            render_term(elim, f, indent, Precedence::App)?;
+            write!(f, ") in {('")?;
+            let target_type_ctx_0 = target_type.get_ctx();
+            let (target_type_ctx_1, equality_name, _) = target_type_ctx_0.unbind();
+            let (target_type_ctx_2, target_type_x1_name, _) = target_type_ctx_1.unbind();
+            let (target_type_ctx_3, target_type_x0_name, _) = target_type_ctx_2.unbind();
+            render_name(f, target_type_x0_name, indent)?;
+            write!(f, ", '")?;
+            render_name(f, target_type_x1_name, indent)?;
+            write!(f, ", '")?;
+            render_name(f, equality_name, indent)?;
+            write!(f, " =   
+        },
+        */
+
         TermKind::J { .. } |
-        TermKind::Abort { .. } |
-        TermKind::PairSplit { .. } => {
-            unimplemented!()
+        TermKind::Abort { .. } => unimplemented!(),
+
+        TermKind::PairSplit { target_type, target, elim } => {
+            let target_type_ctx_0 = target_type.get_ctx();
+            let (target_type_ctx_1, tail_name, _) = target_type_ctx_0.unbind();
+            let (target_type_ctx_2, head_name, _) = target_type_ctx_1.unbind();
+
+            render_term(elim, f, indent, Precedence::App)?;
+            write!(f, " in (")?;
+            render_name(f, &head_name, indent)?;
+            write!(f, ", .. ")?;
+            render_name(f, &tail_name, indent)?;
+            write!(f, ") => ")?;
+            render_term(target, f, indent, Precedence::Func)?;
         },
     }
 
@@ -235,6 +285,20 @@ pub fn render_term(
         write!(f, "}}")?;
     }
 
+    Ok(())
+}
+
+pub fn render_name(
+    f: &mut fmt::Formatter,
+    name: &StrName,
+    indent: u32,
+) -> fmt::Result {
+    if let TermKind::StringLit { ident } = name.kind() {
+        write!(f, "{}", ident.as_str())?;
+    } else {
+        write!(f, "$")?;
+        render_term(&name.as_term(), f, indent, Precedence::Ident)?;
+    }
     Ok(())
 }
 

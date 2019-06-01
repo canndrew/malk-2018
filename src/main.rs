@@ -48,8 +48,9 @@ use lsp_types::Url;
 use self::result_ext::ResultExt;
 use self::future_ext::FutureExt;
 use self::lsp_types_ext::*;
-use self::core::{Ctx, Type, TypeKind, Term, TermKind};
+use self::core::{Ctx, Type, TypeKind, Term, TermKind, StrName};
 use self::interner::Interner;
+use self::syntax::Ident;
 
 /*
 macro_rules! future_bail {
